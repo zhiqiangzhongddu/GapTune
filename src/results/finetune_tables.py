@@ -919,8 +919,8 @@ def _render_table(model: str, shot: str, latest: Mapping[CellKey, Mapping[str, s
             "\\toprule",
             "\\multirow{5}{*}{\\textbf{Models}} & \\multicolumn{9}{c}{\\textbf{Datasets}} \\\\",
             "& \\multicolumn{3}{c|}{\\textbf{Homophily}} & \\multicolumn{3}{c}{\\textbf{Heterophily}} & \\multicolumn{3}{c}{\\textbf{Graph}} \\\\",
-            "& \\textbf{Social} & \\textbf{Academic} & \\textbf{Web}",
-            "& \\textbf{Transport} & \\textbf{Web} & \\textbf{Academic}",
+            "& \\textbf{Social} & \\textbf{Academic} & \\textbf{Academic}",
+            "& \\textbf{Transport} & \\textbf{Web} & \\textbf{Web}",
             "& \\textbf{Molecular} & \\textbf{Chemistry} & \\textbf{Vision} \\\\",
             "& \\textbf{Photo} & \\textbf{Ogbn-arxiv} & \\textbf{DBLP}",
             "& \\textbf{Airports} & \\textbf{Chameleon} & \\textbf{Cornell}",
@@ -1061,8 +1061,8 @@ def _render_backbone_summary_table(
         "\\toprule",
         "\\multirow{5}{*}{\\textbf{Models}} & \\multicolumn{9}{c}{\\textbf{Datasets}} \\\\",
         "& \\multicolumn{3}{c|}{\\textbf{Homophily}} & \\multicolumn{3}{c}{\\textbf{Heterophily}} & \\multicolumn{3}{c}{\\textbf{Graph}} \\\\",
-        "& \\textbf{Social} & \\textbf{Academic} & \\textbf{Web}",
-        "& \\textbf{Transport} & \\textbf{Web} & \\textbf{Academic}",
+        "& \\textbf{Social} & \\textbf{Academic} & \\textbf{Academic}",
+        "& \\textbf{Transport} & \\textbf{Web} & \\textbf{Web}",
         "& \\textbf{Molecular} & \\textbf{Chemistry} & \\textbf{Vision} \\\\",
         "& \\textbf{Photo} & \\textbf{Ogbn-arxiv} & \\textbf{DBLP}",
         "& \\textbf{Airports} & \\textbf{Chameleon} & \\textbf{Cornell}",
@@ -1312,8 +1312,8 @@ def _render_method_summary_table(
         "\\toprule",
         "\\multirow{5}{*}{\\textbf{Models}} & \\multicolumn{9}{c}{\\textbf{Datasets}} \\\\",
         "& \\multicolumn{3}{c|}{\\textbf{Homophily}} & \\multicolumn{3}{c}{\\textbf{Heterophily}} & \\multicolumn{3}{c}{\\textbf{Graph}} \\\\",
-        "& \\textbf{Social} & \\textbf{Academic} & \\textbf{Web}",
-        "& \\textbf{Transport} & \\textbf{Web} & \\textbf{Academic}",
+        "& \\textbf{Social} & \\textbf{Academic} & \\textbf{Academic}",
+        "& \\textbf{Transport} & \\textbf{Web} & \\textbf{Web}",
         "& \\textbf{Molecular} & \\textbf{Chemistry} & \\textbf{Vision} \\\\",
         "& \\textbf{Photo} & \\textbf{Ogbn-arxiv} & \\textbf{DBLP}",
         "& \\textbf{Airports} & \\textbf{Chameleon} & \\textbf{Cornell}",
@@ -1409,8 +1409,8 @@ _TABLE_COLUMN_HEADER_LINES: tuple[str, ...] = (
     "\\toprule",
     "\\multirow{5}{*}{\\textbf{Models}} & \\multicolumn{9}{c}{\\textbf{Datasets}} \\\\",
     "& \\multicolumn{3}{c|}{\\textbf{Homophily}} & \\multicolumn{3}{c}{\\textbf{Heterophily}} & \\multicolumn{3}{c}{\\textbf{Graph}} \\\\",
-    "& \\textbf{Social} & \\textbf{Academic} & \\textbf{Web}",
-    "& \\textbf{Transport} & \\textbf{Web} & \\textbf{Academic}",
+    "& \\textbf{Social} & \\textbf{Academic} & \\textbf{Academic}",
+    "& \\textbf{Transport} & \\textbf{Web} & \\textbf{Web}",
     "& \\textbf{Molecular} & \\textbf{Chemistry} & \\textbf{Vision} \\\\",
     "& \\textbf{Photo} & \\textbf{Ogbn-arxiv} & \\textbf{DBLP}",
     "& \\textbf{Airports} & \\textbf{Chameleon} & \\textbf{Cornell}",
@@ -1418,6 +1418,16 @@ _TABLE_COLUMN_HEADER_LINES: tuple[str, ...] = (
     "& NC & NC & LP",
     "& NC & NC & LP",
     "& GR & GC & GC \\\\",
+)
+
+#: Paper Tables 1, 2, 14 and 15: the grid header with the paper's domain row
+#: (DBLP is Academic and Cornell is Web there).
+_PAPER_COLUMN_HEADER_LINES: tuple[str, ...] = (
+    *_TABLE_COLUMN_HEADER_LINES[:4],
+    "& \\textbf{E-commerce} & \\textbf{Academic} & \\textbf{Academic}",
+    "& \\textbf{Transport} & \\textbf{Web} & \\textbf{Web}",
+    "& \\textbf{Chemistry} & \\textbf{Chemistry} & \\textbf{Vision} \\\\",
+    *_TABLE_COLUMN_HEADER_LINES[7:],
 )
 
 _TABLE_FOOTER_LINES: tuple[str, ...] = (
@@ -1565,7 +1575,7 @@ def _render_cross_dataset_table(
             "Bold/underline mark the best/second test means within a block, including scratch."
         ),
         label=f"table:results_cross_{shot}",
-        header=_TABLE_COLUMN_HEADER_LINES,
+        header=_PAPER_COLUMN_HEADER_LINES,
         body=body,
     )
 
@@ -1619,7 +1629,7 @@ def _render_same_dataset_table(
             "test mean over the architecture--objective grid. Bold/underline indicate the best/second-best displayed means."
         ),
         label=f"table:results_same_{shot}",
-        header=_TABLE_COLUMN_HEADER_LINES,
+        header=_PAPER_COLUMN_HEADER_LINES,
         body=_ranked_group_lines(sections, metrics),
     )
 

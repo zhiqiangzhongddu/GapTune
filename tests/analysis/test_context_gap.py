@@ -76,7 +76,7 @@ def test_bandwidth_is_the_median_nonzero_squared_distance():
     as_points = lambda values: torch.tensor(values, dtype=torch.float64).view(-1, 1)  # noqa: E731
     assert median_bandwidth(as_points([0, 1, 3])) == 4.0  # {1, 9, 4}
     assert median_bandwidth(as_points([0, 1, 3, 7])) == 12.5  # {1, 4, 9, 16, 36, 49}
-    assert median_bandwidth(as_points([0, 0, 2])) == 4.0  # zero distance excluded
+    assert median_bandwidth(as_points([0, 0, 0, 2])) == 4.0  # off-diagonal zeros excluded (else 2.0)
     assert median_bandwidth(as_points([5, 5, 5])) == BANDWIDTH_FLOOR
 
 

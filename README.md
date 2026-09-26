@@ -27,7 +27,7 @@ src/pretrain/       AttrMasking, ContextPred, DGI, EdgePred, GraphCL, InfoGraph
 src/train/          scratch supervised training (target-supervised controls)
 src/finetune/       fine-tuning runner, full fine-tuning / head-only controls, and prompting methods
 src/results/        metric policy and LaTeX table builders from outputs/results/*.tsv
-src/analysis/       appendix analyses: controlled shifts, context gaps, paired statistics, study runtimes
+src/analysis/       appendix studies: prompt transfer, controlled shifts, context replacement, rotation, cost
 slurm/              TSV-driven SLURM launchers (pretrain / train / finetune)
 tests/              pytest suite
 data/, outputs/     datasets and artifacts (git-ignored except dataset lists and .gitkeep files)
@@ -187,22 +187,50 @@ python scripts/run_finetune.py \
 
 ## Analyses
 
-`scripts/run_analysis.py analysis.study <name> [key value ...]` runs one appendix study from the `STUDIES` registry in
-`src/analysis/run.py`. Shared settings live under `cfg.analysis` in `src/config/_analysis.py`: `repetitions` (ten seeds
-by default), `output_dir` (a study writes to `<output_dir>/<study>/<run_tag>/`), checkpoint overrides, and the App. A.4
-context-gap sampling budgets `node_budget` and `message_budget`.
+`scripts/run_analysis.py analysis.study <name> [key value ...]` runs one appendix study of the paper (registry `STUDIES`
+in `src/analysis/run.py`, settings under `cfg.analysis` in `src/config/_analysis.py`). A study writes to
+`<analysis.output_dir>/<study>/<run tag>/` (default `outputs/analysis/`); the run tag is the checkpoint name without its
+seed, or the seed and non-default settings for `cost`.
 
-`transfer` (App. A, Fig. 1) compares EdgePrompt+ donor prompts with target-trained prompts on Photo views, using a frozen
-Photo/GCN/DGI checkpoint. `analysis.pretrained_checkpoint` or the `pretrain.*` keys select the checkpoint. Every fit uses
-`finetune.epochs` and EdgePrompt's learning rate and weight decay. `analysis.transfer` holds the perturbation strengths
-and the number of bootstrap samples. The study writes `rep<seed>.json`, `conditions.tsv` (one row per repetition and
-view), `curve.tsv` and `correlations.tsv`.
+- `transfer` (App. A, Fig. 1): EdgePrompt+ donor prompts against target-trained prompts on perturbed Photo views, with a
+  frozen Photo/GCN/DGI checkpoint, over `analysis.repetitions`. Writes `rep<seed>.json`, `conditions.tsv`, `curve.tsv`
+  and `correlations.tsv`.
+- `controlled_shift` (App. C.7, Table 9, Fig. 7): head-only, target-context, free-value and gap prompts fit on every
+  view of the full Photo and Chameleon graphs, each with its own within-dataset GCN/DGI checkpoint. Writes per dataset
+  `rep<seed>.json`, `conditions.tsv` and `effects.tsv` (paired gap−free / gap−target effects with t intervals); the TSVs
+  cover one invocation, so run all repetitions in one job.
+- `replacement` (App. C.6, Tables 7-8, Fig. 6): swaps the retained source contexts of trained GapTune+ predictors for
+  inverted and random proxy contexts and refits nothing. It exits with status 1 when a check fails (exact identity,
+  `δ_P,q ≤ ε_q`, `|ΔAcc| ≤ 100 − Agree`).
+- `rotation` (App. C.5, Fig. 5): rotates the prompt values of trained GapTune(+) predictors by `R_q(θ)` at fixed norm.
+  `replacement` and `rotation` take one finetune checkpoint per seed of `finetune.num_runs`, resolved from the training
+  command's keys or named by `analysis.finetuned_checkpoint` (`{seed}` placeholder); both write `rep<seed>.json`,
+  `rep<seed>.tsv` and `summary.tsv`.
+- `cost` (App. C.10, Tables 12-13): parameters, time and peak CUDA memory of head-only, full fine-tuning, the free-value
+  controls, GapTune and GapTune+ on a synthetic batch (random GCN 100→128→128→128, 8,192 nodes, 65,536 messages); needs
+  no dataset or checkpoint. Writes `blocks.tsv`, `summary.tsv` and `cost.json`.
 
 ```bash
 python scripts/run_analysis.py analysis.study transfer \
   model.name gcn pretrain.method dgi pretrain.dataset.name photo pretrain.dataset.task_level node \
   pretrain.checkpoint_dir <dir>/pretrained_models device 0
+python scripts/run_analysis.py analysis.study controlled_shift \
+  model.name gcn pretrain.method dgi pretrain.dataset.task_level node \
+  pretrain.checkpoint_dir <dir>/pretrained_models device 0
+python scripts/run_analysis.py analysis.study replacement \
+  model.name gcn pretrain.dataset.name zinc pretrain.dataset.task_level graph pretrain.dataset.induced False \
+  pretrain.method edge_pred finetune.method gaptune \
+  finetune.dataset.name photo finetune.dataset.task_level node finetune.dataset.induced True \
+  finetune.dataset.fixed_split "(5,0.0,1.0)" device 0
+python scripts/run_analysis.py analysis.study rotation \
+  analysis.finetuned_checkpoint "outputs/finetuned_models/photo/<run name>_seed{seed}.pt" device 0
+python scripts/run_analysis.py analysis.study cost device 0
 ```
+
+`transfer` and `controlled_shift` use the `(5, 0, 1)` split of each repetition seed. A seed without a split file under
+`data_preparation.dataset.split_root` gets one created there, as the runners do; point `split_root` at a copy of the
+splits to leave a shared split tree unchanged. The paper tables built from finetune results are listed under
+[Results tables](#results-tables).
 
 ## Batch runs on SLURM
 

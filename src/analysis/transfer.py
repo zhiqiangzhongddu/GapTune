@@ -2,14 +2,17 @@
 
 Photo, full-graph node classification, frozen Photo/GCN/DGI checkpoint; the
 support of repetition ``s`` is the shared ``(5, 0, 1)`` few-shot split of seed
-``s`` (fixed across views). Per repetition:
+``s`` (fixed across views). The views, the context-gap samples and the prompt
+and head initialisations draw from three separate streams seeded by
+``np.random.SeedSequence(s).generate_state(3)``, so they share no draws with
+each other, with other repetitions or with the split generated from seed ``s``.
+Per repetition:
 
-- views: :func:`controlled_views` (``CONTROL`` + family x strength), stream ``s``;
-- context gaps: :func:`view_context_gaps` on the unprompted vanilla encoder,
-  stream ``s + 1``;
+- views: :func:`controlled_views` (``CONTROL`` + family x strength);
+- context gaps: :func:`view_context_gaps` on the unprompted vanilla encoder;
 - EdgePrompt+ on the repo's prompt-aware encoder (``FinetuneEdgePrompt``
   prompt, head, objective and optimiser; encoder frozen in eval mode, GCN
-  normalisation recomputed per adjacency), initialised from ``set_seed(s)``:
+  normalisation recomputed per adjacency), initialised after ``set_seed``:
   a donor prompt + temporary head fit on the unperturbed graph; a fresh target
   prompt + temporary head fit on every view, the control included; then two
   fresh linear heads with one shared initialisation fit on the view above the
@@ -24,7 +27,7 @@ Summary (App. A.5): curve = mean ``E`` per (family, alpha); mean
 within-repetition Spearman of ``(delta_q, E)`` over the nonzero conditions
 (Eq. 30); percentile bootstrap over complete repetitions for both; pooled
 within-family correlations (descriptive, no interval).
-Outputs in ``<analysis.output_dir>/transfer/<checkpoint stem>/``:
+Outputs in ``<analysis.output_dir>/transfer/<checkpoint stem without its seed>/``:
 ``rep<seed>.json``, ``conditions.tsv`` (one row per repetition and view),
 ``curve.tsv`` and ``correlations.tsv``.
 """
@@ -32,7 +35,6 @@ Outputs in ``<analysis.output_dir>/transfer/<checkpoint stem>/``:
 from __future__ import annotations
 
 import copy
-import csv
 import os
 
 import numpy as np
@@ -50,12 +52,12 @@ from src.model import build_encoder_from_cfg
 from src.utils.checkpoint import cfg_to_dict, save_json_atomic
 from src.utils.dataset_helpers import make_workflow_loaders, populate_dataset_cfg_from_meta, shared_split_root
 from src.utils.monitoring import is_metric_improved, monitor_uses_train_split, resolve_monitor_value
-from src.utils.paths import ensure_dir
 from src.utils.random import set_seed
 from src.utils.run_helpers import resolve_seeds
 
 from .context_gap import view_context_gaps
 from .perturbations import CONTROL, FAMILIES, controlled_views
+from .predictor import study_dir, write_tsv
 from .stats import mean_spearman, repetition_bootstrap, spearman
 
 DATASET = "photo"
@@ -102,15 +104,16 @@ def run_repetition(cfg, model, encoder, data, seed: int) -> list[dict]:
     frozen weights as the vanilla encoder; both in eval mode. ``data`` carries
     labels and the train / val / test masks.
     """
+    view_seed, gap_seed, init_seed = (int(s) for s in np.random.SeedSequence(seed).generate_state(3))
     views = controlled_views(
-        data.x, data.edge_index, list(cfg.analysis.transfer.strengths), generator=torch.Generator().manual_seed(seed)
+        data.x, data.edge_index, list(cfg.analysis.transfer.strengths), generator=torch.Generator().manual_seed(view_seed)
     )
     gaps = view_context_gaps(
         encoder,
         views,
         node_budget=int(cfg.analysis.node_budget),
         message_budget=int(cfg.analysis.message_budget),
-        generator=torch.Generator().manual_seed(seed + 1),
+        generator=torch.Generator().manual_seed(gap_seed),
     )
     monitor = resolve_finetune_monitor_spec(
         cfg,
@@ -122,7 +125,7 @@ def run_repetition(cfg, model, encoder, data, seed: int) -> list[dict]:
     labels_and_split = {name: data[name] for name in ("y", "train_mask", "val_mask", "test_mask")}
     graphs = {key: Data(x=view.x, edge_index=view.edge_index, **labels_and_split) for key, view in views.items()}
 
-    set_seed(seed)
+    set_seed(init_seed)
     donor = _fit_prompt(cfg, model, graphs[CONTROL], monitor)
     rows = []
     for key, view in views.items():
@@ -177,10 +180,13 @@ def summarize(rows: list[dict], num_samples: int) -> tuple[list[dict], list[dict
             "E_high": high[i],
             **{f"{k}_mean": float(np.mean([c[k] for c in cells])) for k in ("eta", "delta_H", "delta_M")},
         })
-    correlations = [
-        {"scope": "within_repetition", "q": q, "n": len(reps), "rho": point[j], "low": low[j], "high": high[j]}
-        for j, q in enumerate(GAP_TYPES, start=len(conditions))
-    ]
+    correlations = []
+    for j, q in enumerate(GAP_TYPES, start=len(conditions)):
+        # n = repetitions whose correlation is defined (Eq. 30 excludes the others)
+        n = sum(np.isfinite(spearman([r[f"delta_{q}"] for r in rep], [r["E"] for r in rep])) for rep in reps)
+        correlations.append(
+            {"scope": "within_repetition", "q": q, "n": int(n), "rho": point[j], "low": low[j], "high": high[j]}
+        )
     for family in FAMILIES:
         pooled = [r for rep in reps for r in rep if r["family"] == family]
         for q in GAP_TYPES:
@@ -189,13 +195,6 @@ def summarize(rows: list[dict], num_samples: int) -> tuple[list[dict], list[dict
                 {"scope": f"pooled_{family}", "q": q, "n": len(pooled), "rho": rho, "low": np.nan, "high": np.nan}
             )
     return curve, correlations
-
-
-def _write_tsv(path: str, rows: list[dict]) -> None:
-    with open(path, "w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]), delimiter="\t")
-        writer.writeheader()
-        writer.writerows(rows)
 
 
 def _resolve_checkpoint(cfg) -> str | None:
@@ -247,7 +246,7 @@ def run_transfer(cfg) -> int:
     populate_dataset_cfg_from_meta(cfg.model, ds, dataset_info(dataset, "node", DATASET))
     device = torch.device(f"cuda:{cfg.device}" if torch.cuda.is_available() else "cpu")
     model, encoder = _frozen_encoders(cfg, payload["model_state"], device)
-    out_dir = ensure_dir(os.path.join(cfg.analysis.output_dir, "transfer", os.path.splitext(os.path.basename(path))[0]))
+    out_dir = study_dir(cfg, "transfer", path)
     print(f"[Analysis][transfer] checkpoint={path} output={out_dir}")
 
     rows = []
@@ -265,16 +264,18 @@ def run_transfer(cfg) -> int:
             split_root=shared_split_root(cfg),
         )
         rep = run_repetition(cfg, model, encoder, next(iter(loader)).to(device), seed)
-        save_json_atomic(str(out_dir / f"rep{seed}.json"), {"checkpoint": path, "seed": seed, "conditions": rep})
+        save_json_atomic(
+            os.path.join(out_dir, f"rep{seed}.json"), {"checkpoint": path, "seed": seed, "conditions": rep}
+        )
         print(f"[Analysis][transfer] seed={seed} " + " ".join(
             f"{r['family']}@{r['alpha']:g}:E={r['E']:.2f}" for r in rep
         ))
         rows.extend(rep)
 
     curve, correlations = summarize(rows, int(cfg.analysis.transfer.bootstrap_samples))
-    _write_tsv(str(out_dir / "conditions.tsv"), rows)
-    _write_tsv(str(out_dir / "curve.tsv"), curve)
-    _write_tsv(str(out_dir / "correlations.tsv"), correlations)
+    write_tsv(os.path.join(out_dir, "conditions.tsv"), rows)
+    write_tsv(os.path.join(out_dir, "curve.tsv"), curve)
+    write_tsv(os.path.join(out_dir, "correlations.tsv"), correlations)
     for r in correlations[: len(GAP_TYPES)]:
         print(f"[Analysis][transfer] mean Spearman rho_{r['q']}={r['rho']:.3f} [{r['low']:.3f}, {r['high']:.3f}]")
     return 0

@@ -5,16 +5,19 @@
 - perturbed contexts obey ``0 < delta_P,q <= eps_q`` (Prop. 3.3) and
   ``|dAcc| <= 100 - Agree``, and the predictor is left unchanged;
 - proxy collections are pooled with the frozen queries without touching the
-  predictor, and pooling the predictor's own bank reproduces ``C*_s``.
+  predictor, and pooling the predictor's own bank reproduces ``C*_s``;
+- only source-available GapTune+ predictors are accepted.
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 from torch_geometric.data import Batch
 
+from src.analysis import replacement
 from src.analysis.replacement import IDENTITY, _rows, _summary, proxy_contexts, replacement_measures
 from tests.finetune.test_gaptune import _cfg, _graphs, _set_gates, _task
 
@@ -44,6 +47,9 @@ def test_identity_replacement_is_exact():
     assert m["agreement"] == 100.0 and m["delta_acc"] == 0.0
     (row,) = _rows(42, {IDENTITY: m})
     assert row["contexts"] == IDENTITY and row["budget"] == "-" and row["ec"] == 0.0 and row["checks_ok"]
+    # Identity needs an exactly zero prompt change, not only delta_P,q <= eps_q + tolerance.
+    (row,) = _rows(42, {IDENTITY: {**m, "delta_p": {**m["delta_p"], "N": 1e-6}}})
+    assert not row["checks_ok"]
 
 
 def test_perturbed_contexts_obey_the_prompt_and_accuracy_bounds():
@@ -90,3 +96,14 @@ def test_proxy_contexts_are_pooled_with_the_frozen_queries():
         assert not torch.equal(value, before[f"prompt.types.{key}.retained_source_context"])
     for name, value in task.state_dict().items():
         assert torch.equal(value, before[name]), name
+
+
+def test_replacement_rejects_a_source_free_predictor(monkeypatch, tmp_path):
+    cfg = _cfg("gcn", plus=False)  # GapTune: C*_s are themselves proxy contexts
+    cfg.analysis.output_dir = str(tmp_path)
+    task, _ = _task(cfg, bank=False)
+    monkeypatch.setattr(torch, "use_deterministic_algorithms", lambda *args, **kwargs: None)
+    monkeypatch.setattr(replacement, "finetuned_checkpoints", lambda cfg: [(3, "ft_seed3.pt")])
+    monkeypatch.setattr(replacement, "restore_predictor", lambda cfg, checkpoint: (SimpleNamespace(task=task), {}))
+    with pytest.raises(ValueError, match="GapTune\\+"):
+        replacement.run_replacement(cfg)

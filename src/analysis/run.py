@@ -12,6 +12,7 @@ from typing import Callable, Iterable, Optional
 from src.config import cfg as base_cfg, update_cfg
 from src.utils.save_results import extract_explicit_cfg_keys, set_explicit_cfg_keys
 
+from .controlled_shift import run_controlled_shift
 from .cost import run_cost_study
 from .replacement import run_replacement
 from .rotation import run_rotation
@@ -21,7 +22,7 @@ from .transfer import run_transfer
 # study without a runtime yet.
 STUDIES: dict[str, Optional[Callable]] = {
     "transfer": run_transfer,  # App. A: prompt transferability (Fig. 1)
-    "controlled_shift": None,  # App. C.7: prompt values under controlled shifts (Table 9, Fig. 7)
+    "controlled_shift": run_controlled_shift,  # App. C.7: prompt values under controlled shifts (Table 9, Fig. 7)
     "replacement": run_replacement,  # App. C.6: fixed-predictor source-context replacement (Tables 7-8, Fig. 6)
     "rotation": run_rotation,  # App. C.5: prompt direction at fixed magnitude (Fig. 5)
     "cost": run_cost_study,  # App. C.10: parameter / time / memory accounting (Tables 12-13)

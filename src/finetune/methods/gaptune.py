@@ -331,6 +331,23 @@ class FinetuneGapTune(FinetuneTask):
                 device=device,
             )
             source = {"source": "proxy", "proxy": proxy_metadata}
+        sampling = self.set_source_from_graphs(model, graphs, device)
+        self.initialization_metadata = {**source, **sampling}
+        print(
+            f"[Finetune][GapTune] Source bank from {source['source']}: {sampling['bank_sizes']} "
+            f"({sampling['graphs_encoded']}/{sampling['graphs_total']} graphs encoded)"
+        )
+
+    def set_source_from_graphs(self, model: nn.Module, graphs, device) -> dict:
+        """Fix the source bank sampled from *graphs* and its retained contexts; returns the sampling metadata."""
+        banks, sampling = self.sample_source_banks(model, graphs, device)
+        self.prompt.set_source_bank(banks)
+        self.prompt.refresh_retained()
+        return sampling
+
+    def sample_source_banks(self, model: nn.Module, graphs, device) -> tuple[dict, dict]:
+        """Observations of *graphs* sampled with this task's source caps and sampler stream, and the metadata."""
+        gt_cfg = self.method_cfg
         observation_seed = int(self.cfg.seed) + _OBSERVATION_STREAM
         banks, sampling = sample_source_observations(
             self.driver,
@@ -342,13 +359,7 @@ class FinetuneGapTune(FinetuneTask):
             max_messages=int(gt_cfg.source_max_messages),
             generator=torch.Generator().manual_seed(observation_seed),
         )
-        self.prompt.set_source_bank(banks)
-        self.prompt.refresh_retained()
-        self.initialization_metadata = {**source, **sampling, "observation_seed": observation_seed}
-        print(
-            f"[Finetune][GapTune] Source bank from {source['source']}: {sampling['bank_sizes']} "
-            f"({sampling['graphs_encoded']}/{sampling['graphs_total']} graphs encoded)"
-        )
+        return banks, {**sampling, "observation_seed": observation_seed}
 
     def parameters_to_optimize(self):
         return [p for p in self.prompt.parameters() if p.requires_grad] + list(self.head.parameters())
@@ -366,12 +377,17 @@ class FinetuneGapTune(FinetuneTask):
             optimizers["primary"].register_step_post_hook(lambda *_: self.prompt.project_gates())
         return optimizers
 
-    def encode(self, model: nn.Module, data) -> torch.Tensor:
-        """Unprompted detached pass, then the prompted pass (Algorithm 1, lines 13-28)."""
-        with torch.no_grad():
-            reference = self.driver.forward(
-                model, data, collect=bool(self.prompt.types), projections=self.projections
-            )
+    def encode(self, model: nn.Module, data, reference=None) -> torch.Tensor:
+        """Unprompted detached pass, then the prompted pass (Algorithm 1, lines 13-28).
+
+        *reference* is that unprompted pass (``collect=True``) when the caller
+        already has it, e.g. a fixed full graph encoded once.
+        """
+        if reference is None:
+            with torch.no_grad():
+                reference = self.driver.forward(
+                    model, data, collect=bool(self.prompt.types), projections=self.projections
+                )
         if not self.prompt.types:
             return reference.node_repr
         node_prompt, message_prompts = self.prompt(

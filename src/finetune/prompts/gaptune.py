@@ -64,7 +64,13 @@ def pool_target_contexts(
     tau_c: float,
     eps: float,
 ) -> torch.Tensor:
-    """Eq. 8-9 separately for every prediction graph: ``[G, K, d]``."""
+    """Eq. 8-9 separately for every prediction graph: ``[G, K, d]``.
+
+    A single (e.g. full) graph is pooled exactly like the source bank, so
+    identical source and target collections give exactly zero gaps.
+    """
+    if num_graphs == 1:
+        return pool_source_context(queries, z, tau_c, eps).unsqueeze(0)
     weights = graph_softmax(normalize_observations(z, eps) @ queries.t() / tau_c, graph_id, num_nodes=num_graphs)
     return torch.stack(
         [
@@ -186,6 +192,10 @@ class ObservationTypePrompt(nn.Module):
             return None
         values = self.values(z, graph_id, num_graphs, use_retained=use_retained)
         weights = self.mixture_weights(descriptors) * torch.tanh(self.gates)
+        if num_graphs == 1:
+            # One (e.g. full) graph: dense mixing; the per-row gather below
+            # has a very slow backward when every row hits the same graph.
+            return weights @ values[0]
         prompt = z.new_zeros(z.shape)
         for k in range(self.num_queries):
             prompt = prompt + weights[:, k : k + 1] * values[graph_id, k]

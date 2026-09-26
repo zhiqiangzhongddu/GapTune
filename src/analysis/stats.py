@@ -75,11 +75,14 @@ def repetition_bootstrap(
     confidence: float = 0.95,
     seed: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Percentile interval of ``statistic`` over resamples of complete repetitions (with replacement)."""
+    """Percentile interval of ``statistic`` over resamples of complete repetitions (with replacement).
+
+    Resamples where the statistic is undefined (NaN) are left out of the interval.
+    """
     rng = np.random.default_rng(seed)
     n = len(repetitions)
     draws = np.array([
         statistic([repetitions[i] for i in rng.integers(n, size=n)]) for _ in range(num_samples)
     ])
     tail = 100 * (1 - confidence) / 2
-    return np.percentile(draws, tail, axis=0), np.percentile(draws, 100 - tail, axis=0)
+    return np.nanpercentile(draws, tail, axis=0), np.nanpercentile(draws, 100 - tail, axis=0)

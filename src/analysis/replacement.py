@@ -35,9 +35,9 @@ from src.analysis.predictor import (
     write_tsv,
 )
 from src.analysis.stats import paired_t
-from src.finetune.methods.gaptune import _OBSERVATION_STREAM, sample_source_observations
 from src.finetune.methods.gaptune_proxy import build_proxy_source_graphs
 from src.utils.checkpoint import save_json_atomic
+from src.utils.parsing import to_bool
 from src.utils.pool import get_batch_vector
 
 IDENTITY = "original"
@@ -62,16 +62,7 @@ def proxy_contexts(runner, proxy_cfg, pretrain_extra) -> tuple[dict, dict]:
         pretrain_extra=pretrain_extra,
         device=runner.device,
     )
-    banks, sampling = sample_source_observations(
-        task.driver,
-        model,
-        graphs,
-        projections=task.projections,
-        device=runner.device,
-        max_nodes=int(task.method_cfg.source_max_nodes),
-        max_messages=int(task.method_cfg.source_max_messages),
-        generator=torch.Generator().manual_seed(int(runner.cfg.seed) + _OBSERVATION_STREAM),
-    )
+    banks, sampling = task.sample_source_banks(model, graphs, runner.device)
     with torch.no_grad():
         contexts = {key: prompt.source_context(banks[key].to(runner.device)) for key, prompt in task.prompt.types.items()}
     return contexts, {"proxy": metadata, **sampling}
@@ -148,6 +139,7 @@ def _rows(seed: int, measures: dict) -> list[dict]:
         checks = m["prompt_bound_ok"] and m["accuracy_bound_ok"]
         if name == IDENTITY:
             checks = checks and row["ec"] == 0 and m["ef_max"] == 0 and m["agreement"] == 100.0
+            checks = checks and all(value == 0.0 for value in m["delta_p"].values())
         row["checks_ok"] = bool(checks)
         rows.append(row)
     return rows
@@ -181,6 +173,8 @@ def run_replacement(cfg) -> int:
         value_mode = runner.task.method_cfg.value_mode
         if value_mode in ("target", "free"):
             raise ValueError(f"[Analysis] value_mode={value_mode} has no source contexts to replace.")
+        if not to_bool(runner.task.method_cfg.plus):
+            raise ValueError("[Analysis] App. C.6 replaces the source contexts of a GapTune+ (plus True) checkpoint.")
         pretrain_extra = torch.load(runner.pretrained_checkpoint, map_location="cpu").get("extra") or {}
         replacements = {IDENTITY: {key: p.retained_source_context.clone() for key, p in runner.task.prompt.types.items()}}
         proxies = {}
@@ -193,7 +187,7 @@ def run_replacement(cfg) -> int:
         measures = replacement_measures(runner.task, runner.model, runner.test_loader, runner.device, replacements)
         seed_rows = _rows(seed, measures)
         save_json_atomic(
-            os.path.join(out_dir, f"seed{seed}.json"),
+            os.path.join(out_dir, f"rep{seed}.json"),
             {
                 "seed": seed,
                 "checkpoint": checkpoint,
@@ -202,7 +196,7 @@ def run_replacement(cfg) -> int:
                 "proxies": proxies,
             },
         )
-        write_tsv(os.path.join(out_dir, f"seed{seed}.tsv"), seed_rows)
+        write_tsv(os.path.join(out_dir, f"rep{seed}.tsv"), seed_rows)
         rows.extend(seed_rows)
     summary = _summary(rows)
     write_tsv(os.path.join(out_dir, "summary.tsv"), summary)

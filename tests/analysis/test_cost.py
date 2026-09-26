@@ -3,7 +3,9 @@
 - parameter census of Table 12 (1,032 head; 46,984 full fine-tuning; 3,664 /
   12,896 / 15,528 free values; 15,528 GapTune(+)) and 3,872 retained scalars;
 - workload shape: 64 simple graphs, 8,192 nodes, 65,536 GCN messages per layer;
+- the GapTune+ source is a ZINC-sized collection sampled like the runner's;
 - only full fine-tuning trains the encoder;
+- summary mean / sample SD, and run tags that separate resized runs;
 - a shortened CPU run writes the per-block and summary tables.
 """
 
@@ -11,7 +13,10 @@ from __future__ import annotations
 
 import copy
 import csv
+import math
 
+import numpy as np
+import pytest
 import torch
 from torch_geometric.data import Batch
 from torch_geometric.utils import is_undirected
@@ -60,11 +65,26 @@ def test_synthetic_workload_shape():
     assert [layer.messages.size(0) for layer in obs.layers] == [65_536] * 3
 
 
+def test_gaptune_plus_source_is_zinc_sized():
+    wcfg = cost.workload_cfg(base_cfg)
+    encoder = cost.workload_encoder(wcfg)
+    graphs = cost.synthetic_graphs(
+        cost.SOURCE_GRAPHS, torch.Generator().manual_seed(0), cost.SOURCE_NODES, cost.SOURCE_EDGES
+    )
+    assert graphs[0].num_nodes == 23 and graphs[0].edge_index.size(1) == 2 * 25
+    task, _ = cost.build_method(wcfg, "gaptune_plus", encoder)
+    sampling = task.set_source_from_graphs(encoder, graphs, torch.device("cpu"))
+    # Two 64-graph chunks (2,944 nodes, 9,344 messages per layer) reach 4x the 512 / 2,048 caps.
+    assert sampling["graphs_encoded"] == 128 and sampling["observation_seed"] == wcfg.seed + 1
+    assert sampling["bank_sizes"] == {"N": 512, "M1": 2048, "M2": 2048, "M3": 2048}
+    assert {key: p.source_bank.size(0) for key, p in task.prompt.types.items()} == sampling["bank_sizes"]
+    assert all(p.retained_source_context.abs().sum() > 0 for p in task.prompt.types.values())
+
+
 def test_only_full_finetuning_trains_the_encoder():
     wcfg = cost.workload_cfg(base_cfg)
     encoder = cost.workload_encoder(wcfg)
     batch = Batch.from_data_list(cost.synthetic_graphs(2, torch.Generator().manual_seed(0)))
-    census = cost.parameter_census(base_cfg)
     for name in ("head_only", "full_finetuning", "free_node_message"):
         model = copy.deepcopy(encoder)
         task, params = cost.build_method(wcfg, name, model)
@@ -76,7 +96,41 @@ def test_only_full_finetuning_trains_the_encoder():
         encoder_grads = [p.grad is not None for p in model.convs.parameters()]
         assert all(encoder_grads) if name == "full_finetuning" else not any(encoder_grads)
         assert all(p.grad is not None for p in task.head.parameters())
-        assert sum(p.numel() for p in params) == census[name]["trainable"]
+        optimized = {id(p) for p in params}
+        conv_params = list(model.convs.parameters())
+        assert sum(p.numel() for p in conv_params) == 45_952
+        in_optimizer = [id(p) in optimized for p in conv_params]
+        assert all(in_optimizer) if name == "full_finetuning" else not any(in_optimizer)
+
+
+def test_summarize_reports_mean_and_sample_sd():
+    census = {name: {"trainable": 1, "retained_scalars": 0} for name in cost.METHODS}
+    records = [
+        {"block": block, "method": name, **{key: value + index for index, key in enumerate(cost.METRICS)}}
+        for block, value in enumerate((1.0, 4.0))
+        for name in cost.METHODS
+    ]
+    rows = cost.summarize(records, census)
+    assert [row["method"] for row in rows] == list(cost.METHODS)
+    for row in rows:
+        for index, key in enumerate(cost.METRICS):
+            assert row[f"{key}_mean"] == pytest.approx(2.5 + index)
+            assert row[f"{key}_sd"] == pytest.approx(np.std([1.0, 4.0], ddof=1))
+    single = cost.summarize([r for r in records if r["block"] == 0], census)
+    assert all(row["adapt_s_mean"] == 1.0 + cost.METRICS.index("adapt_s") for row in single)
+    assert all(math.isnan(row[f"{key}_sd"]) for row in single for key in cost.METRICS)
+
+
+def test_run_tag_separates_resized_workloads():
+    assert cost._run_tag(base_cfg, 42) == "seed42"
+    cfg = base_cfg.clone()
+    cfg.analysis.cost.updates = 20
+    cfg.finetune.gaptune.num_queries = 4
+    cfg.finetune.gaptune.source_max_messages = 1024
+    cfg.finetune.gaptune.proxy.num_graphs = 4
+    cfg.finetune.gaptune.proxy.updates = 1
+    assert cost._run_tag(cfg, 42) == "seed42-u20-k4-sm1024-pxb4-pxu1"
+    assert cfg.finetune.gaptune.plus == base_cfg.finetune.gaptune.plus
 
 
 def test_shortened_run_writes_tables(tmp_path, monkeypatch):

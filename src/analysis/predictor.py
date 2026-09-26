@@ -40,7 +40,8 @@ def _pretrained_checkpoint(cfg) -> tuple[str, str | None]:
 def finetuned_checkpoints(cfg) -> list[tuple[int, str]]:
     """``(seed, checkpoint)`` per repetition over the seeds of ``finetune.num_runs``.
 
-    ``analysis.finetuned_checkpoint`` names the files (``{seed}`` placeholder);
+    ``analysis.finetuned_checkpoint`` names the files (``{seed}`` placeholder;
+    a single file without it is labelled with the seed it was trained with);
     "" resolves each seed's checkpoint like the finetune runner, from the
     ``pretrain.*`` / ``model.*`` / ``finetune.*`` keys of the training command.
     """
@@ -59,6 +60,8 @@ def finetuned_checkpoints(cfg) -> list[tuple[int, str]]:
     missing = [path for path in paths if not os.path.isfile(path)]
     if missing:
         raise FileNotFoundError(f"[Analysis] Finetuned checkpoint(s) not found: {missing}")
+    if template and "{seed}" not in template:
+        seeds = [int(torch.load(template, map_location="cpu")["cfg"]["seed"])]
     return list(zip(seeds, paths))
 
 
@@ -68,9 +71,11 @@ def restore_predictor(cfg, checkpoint: str) -> tuple[FinetuneRunner, dict]:
     run_cfg = cfg.clone()
     saved = {key: value for key, value in payload["cfg"].items() if key not in _INVOCATION_KEYS}
     FinetuneRunner._merge_dict_into_cfg(run_cfg, saved)
+    run_cfg.seed = int(saved["seed"])  # set per run by the finetune runtime, not a declared key
     run_cfg.finetune.skip_if_exists = False
-    pretrained = str(cfg.analysis.pretrained_checkpoint).strip() or run_cfg.finetune.pretrained_checkpoint
-    runner = FinetuneRunner(run_cfg, pretrained, run_cfg.finetune.pretrained_run_name or None)
+    source = payload["extra"]["pretrained_from"]
+    pretrained = str(cfg.analysis.pretrained_checkpoint).strip() or source["checkpoint"]
+    runner = FinetuneRunner(run_cfg, pretrained, source["run_name"])
     if runner.finetune_method != "gaptune":
         raise ValueError(f"[Analysis] {checkpoint} is a '{runner.finetune_method}' checkpoint, not GapTune.")
     runner._setup()  # the runner's own dataset / split / loader / encoder / task construction

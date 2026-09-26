@@ -2,6 +2,7 @@
 
 import csv
 import json
+import re
 
 from src.results import finetune_tables as ft
 from src.results import train_tables
@@ -276,6 +277,59 @@ def test_ablation_tables_map_arms_to_their_cells():
     assert _cells(source, "GapTune Plus (source available)")[0] == "\\textbf{77.86}$_{\\pm1.00}$"
 
 
+#: Paper Tables 3-6 arms as the finetune.gaptune.* columns of their runs, written independently of ft.ABLATION_TABLES.
+_PAPER_ARMS = {
+    "Head only": {"prompt_locations": "none"},
+    "Target": {"value_mode": "target"},
+    "Source": {"value_mode": "source"},
+    "Paired mean": {"value_mode": "paired_mean"},
+    "Free vectors": {"value_mode": "free"},
+    "GapTune Plus": {},
+    "Free values: node only": {"value_mode": "free", "prompt_locations": "node"},
+    "Free values: message only": {"value_mode": "free", "prompt_locations": "message"},
+    "Free values: node + message": {"value_mode": "free"},
+    "Gap values: node only": {"prompt_locations": "node"},
+    "Gap values: message only": {"prompt_locations": "message"},
+    "GapTune Plus: node + message": {},
+    "Frozen shared queries": {"query_mode": "frozen"},
+    "Untied source/target queries": {"query_mode": "untied"},
+    "Uniform mixture weights": {"mixture": "uniform"},
+    "Learned global mixture weights": {"mixture": "global"},
+    "Nonnegative gates": {"gate": "nonnegative"},
+    "Random proxies ($B=4$)": {"plus": False, "proxy__mode": "random", "proxy__num_graphs": 4},
+    "Random proxies ($B=16$)": {"plus": False, "proxy__mode": "random", "proxy__num_graphs": 16},
+    "Random proxies ($B=64$)": {"plus": False, "proxy__mode": "random", "proxy__num_graphs": 64},
+    "Inverted proxies ($B=4$)": {"plus": False, "proxy__mode": "inverted", "proxy__num_graphs": 4},
+    "GapTune ($B=16$)": {"plus": False, "proxy__mode": "inverted", "proxy__num_graphs": 16},
+    "Inverted proxies ($B=64$)": {"plus": False, "proxy__mode": "inverted", "proxy__num_graphs": 64},
+    "GapTune Plus (source available)": {},
+}
+
+
+def test_every_ablation_arm_reads_its_own_result_row():
+    # One row per column and distinct settings (head only, free node + message and GapTune+ share theirs), so a
+    # mis-specified arm shows another arm's mean or "--".
+    assert {arm.label for table in ft.ABLATION_TABLES for arm in table.arms} == set(_PAPER_ARMS)
+    settings = {label: tuple(sorted(columns.items())) for label, columns in _PAPER_ARMS.items()}
+    means, rows = {}, []
+    for table in ft.ABLATION_TABLES:
+        for name, shot in table.columns:
+            dataset = next(spec for spec in ft.DATASETS if spec.name == name)
+            split = dataset.f5_split if shot == "f5" else dataset.f100_split
+            for arm in table.arms:
+                key = (name, shot, settings[arm.label])
+                if key not in means:
+                    means[key] = 0.2 + len(means) / 1000
+                    rows.append(_gt(name, means[key], split=split, metric=dataset.metric, **_PAPER_ARMS[arm.label]))
+    latest = _latest(rows)
+    for table in ft.ABLATION_TABLES:
+        text = ft._render_ablation_table(table=table, latest=latest)
+        for arm in table.arms:
+            shown = [re.sub(r"\\(?:textbf|underline)\{(.*?)\}", r"\1", cell) for cell in _cells(text, arm.label)]
+            expected = [f"{100 * means[(name, shot, settings[arm.label])]:.2f}$_{{\\pm1.00}}$" for name, shot in table.columns]
+            assert shown == expected, (table.name, arm.label)
+
+
 def test_ranking_ties_share_rank_and_skip_oom():
     rows = [("A", [(0.5, 0.01)]), ("B", [(0.50001, 0.02)]), ("C", ["OOM"]), ("D", [(0.4, 0.01)]), ("E", [None])]
     lines = ft._ranked_group_lines([("", rows)], ["test_acc"])
@@ -317,3 +371,7 @@ def test_render_tables_writes_paper_tables(tmp_path):
     assert "80.00$_{\\pm1.00}$" in grid and "95.00" not in grid
     cross = (out / "finetune_cross_f5_table.tex").read_text(encoding="utf-8")
     assert "\\textbf{77.86}$_{\\pm1.00}$" in cross and "\\underline{77.08}$_{\\pm1.00}$" in cross
+    # Paper Tables 1/2/14/15 label DBLP Academic and Cornell Web.
+    same = (out / "finetune_same_f5_table.tex").read_text(encoding="utf-8")
+    for text in (cross, same):
+        assert "& \\textbf{E-commerce} & \\textbf{Academic} & \\textbf{Academic}\n& \\textbf{Transport} & \\textbf{Web} & \\textbf{Web}\n" in text

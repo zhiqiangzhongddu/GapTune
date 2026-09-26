@@ -12,10 +12,11 @@ trainable), so all share the batch sequence and evaluation calls:
 - preparation: GapTune runs the source-free proxy inversion
   (``finetune.gaptune.proxy``: 16 graphs x 32 nodes, 1,000 updates, EdgePred
   dot-product pretext) and response extraction; GapTune+ only extracts
-  responses, from a synthetic source collection shaped like the batch (no
-  dataset is loaded). Both use the source caps 512 / 2,048. The free-value
-  controls read the same source bank for their norm envelope but, as in
-  Table 12, are charged no preparation;
+  responses, from a synthetic stand-in for the ZINC collection of a
+  ZINC/GCN/EdgePred checkpoint (256 graphs of 23 nodes and 25 undirected
+  edges; no dataset is loaded). Both use the source caps 512 / 2,048. The
+  free-value controls read the same source bank for their norm envelope but,
+  as in Table 12, are charged no preparation;
 - adaptation: ``analysis.cost.updates`` Adam updates on the fixed batch plus
   ``analysis.cost.evaluations`` fixed-batch evaluations with the retained
   contexts; update and inference times are per call, total = preparation +
@@ -23,17 +24,16 @@ trainable), so all share the batch sequence and evaluation calls:
 
 Stage times are bracketed by ``torch.cuda.synchronize``; a stage's peak
 memory is its maximum allocated bytes above the method's starting allocation
-(MiB; NaN off CUDA). Every method first runs one untimed warm-up block (one
-update, one evaluation, one inversion update). Outputs in
-``<analysis.output_dir>/cost/<run tag>/``: ``blocks.tsv`` (one row per timing
-block and method), ``summary.tsv`` (Tables 12-13: census plus mean and sample
-SD over blocks) and ``cost.json``.
+(MiB, the ``*_mib`` columns; NaN off CUDA). Every method first runs one
+untimed warm-up block (one update, one evaluation, one inversion update).
+Outputs in ``<analysis.output_dir>/cost/<run tag>/``: ``blocks.tsv`` (one row
+per timing block and method), ``summary.tsv`` (Tables 12-13: census plus mean
+and sample SD over blocks) and ``cost.json``.
 """
 
 from __future__ import annotations
 
 import copy
-import csv
 import gc
 import os
 import sys
@@ -43,7 +43,8 @@ import numpy as np
 import torch
 from torch_geometric.data import Batch, Data
 
-from src.finetune.methods.gaptune import _OBSERVATION_STREAM, FinetuneGapTune, sample_source_observations
+from src.analysis.predictor import write_tsv
+from src.finetune.methods.gaptune import FinetuneGapTune
 from src.model import build_encoder_from_cfg
 from src.utils.checkpoint import save_json_atomic
 from src.utils.config_helpers import cfg_default, tag_if_nondefault
@@ -53,6 +54,8 @@ from src.utils.run_helpers import resolve_seeds
 IN_DIM, WIDTH, NUM_LAYERS, NUM_CLASSES = 100, 128, 3, 8
 # 64 * 128 = 8,192 nodes; 64 * (2 * 448 + 128) = 65,536 directed messages with self-loops
 NUM_GRAPHS, GRAPH_NODES, GRAPH_EDGES = 64, 128, 448
+# GapTune+ source: ZINC-sized graphs; extraction stops after two 64-graph chunks (4x the source caps)
+SOURCE_GRAPHS, SOURCE_NODES, SOURCE_EDGES = 256, 23, 25
 FULL_FINETUNING = "full_finetuning"
 # name -> (Table 12 label, value_mode, prompt_locations, timed preparation)
 METHODS = {
@@ -64,7 +67,7 @@ METHODS = {
     "gaptune": ("GapTune", "gap", "node_message", "proxy"),
     "gaptune_plus": ("GapTune+", "gap", "node_message", "source"),
 }
-METRICS = ("prep_s", "update_ms", "adapt_s", "infer_ms", "total_s", "prep_mb", "adapt_mb", "peak_mb")
+METRICS = ("prep_s", "update_ms", "adapt_s", "infer_ms", "total_s", "prep_mib", "adapt_mib", "peak_mib")
 
 
 class _FullFinetune(FinetuneGapTune):
@@ -89,17 +92,19 @@ def workload_cfg(cfg):
     return wcfg
 
 
-def synthetic_graphs(num_graphs: int, generator: torch.Generator) -> list[Data]:
+def synthetic_graphs(
+    num_graphs: int, generator: torch.Generator, num_nodes: int = GRAPH_NODES, num_edges: int = GRAPH_EDGES
+) -> list[Data]:
     """Simple undirected graphs (both directions, no self-loops) with N(0, 1) features,
     focal node 0 and a uniform class label."""
-    row, col = torch.triu_indices(GRAPH_NODES, GRAPH_NODES, offset=1)
+    row, col = torch.triu_indices(num_nodes, num_nodes, offset=1)
     graphs = []
     for _ in range(num_graphs):
-        pick = torch.randperm(row.numel(), generator=generator)[:GRAPH_EDGES]
+        pick = torch.randperm(row.numel(), generator=generator)[:num_edges]
         u, v = row[pick], col[pick]
         graphs.append(
             Data(
-                x=torch.randn(GRAPH_NODES, IN_DIM, generator=generator),
+                x=torch.randn(num_nodes, IN_DIM, generator=generator),
                 edge_index=torch.stack([torch.cat([u, v]), torch.cat([v, u])]),
                 y=torch.randint(NUM_CLASSES, (1,), generator=generator),
                 target_node_index=torch.tensor([0]),
@@ -155,20 +160,8 @@ def prepare_source(task, encoder, preparation: str, source_graphs, device) -> No
     """Fill the fixed source bank: proxy inversion + extraction, or extraction from *source_graphs*."""
     if preparation == "proxy":
         task.prepare_with_encoder(model=encoder, device=device, pretrain_cfg={}, pretrain_extra={})
-        return
-    gt = task.method_cfg
-    banks, _ = sample_source_observations(
-        task.driver,
-        encoder,
-        source_graphs,
-        projections=task.projections,
-        device=device,
-        max_nodes=int(gt.source_max_nodes),
-        max_messages=int(gt.source_max_messages),
-        generator=torch.Generator().manual_seed(int(task.cfg.seed) + _OBSERVATION_STREAM),
-    )
-    task.prompt.set_source_bank(banks)
-    task.prompt.refresh_retained()
+    else:
+        task.set_source_from_graphs(encoder, source_graphs, device)
 
 
 def _sync(device) -> None:
@@ -202,11 +195,11 @@ def run_block(wcfg, name: str, encoder, batch, source_graphs, device, *, updates
     encoder = copy.deepcopy(encoder).to(device)
     task, params = build_method(wcfg, name, encoder)
     preparation = METHODS[name][3]
-    record = {"prep_s": 0.0, "prep_mb": 0.0 if cuda else float("nan")}
+    record = {"prep_s": 0.0, "prep_mib": 0.0 if cuda else float("nan")}
     if preparation is not None:
         start = _stage_start(device)
         prepare_source(task, encoder, preparation, source_graphs, device)
-        record["prep_s"], record["prep_mb"] = _stage_end(device, start, base)
+        record["prep_s"], record["prep_mib"] = _stage_end(device, start, base)
     elif task.prompt.types:
         prepare_source(task, encoder, "source", source_graphs, device)  # free-value envelope, not charged
     batch = batch.to(device)
@@ -234,12 +227,12 @@ def run_block(wcfg, name: str, encoder, batch, source_graphs, device, *, updates
             _sync(device)
             infer_ms.append(1e3 * (time.perf_counter() - tick))
             task.train()
-    record["adapt_s"], record["adapt_mb"] = _stage_end(device, start, base)
+    record["adapt_s"], record["adapt_mib"] = _stage_end(device, start, base)
     record.update(
         update_ms=float(np.mean(update_ms)),
         infer_ms=float(np.mean(infer_ms)),
         total_s=record["prep_s"] + record["adapt_s"],
-        peak_mb=max(record["prep_mb"], record["adapt_mb"]),
+        peak_mib=max(record["prep_mib"], record["adapt_mib"]),
     )
     return record
 
@@ -257,22 +250,18 @@ def summarize(records: list[dict], census: dict) -> list[dict]:
     return rows
 
 
-def _write_tsv(path: str, rows: list[dict]) -> None:
-    with open(path, "w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]), delimiter="\t")
-        writer.writeheader()
-        writer.writerows(rows)
-
-
 def _run_tag(cfg, seed: int) -> str:
-    """``seed<s>`` plus the non-default timing settings, so shortened runs never overwrite full ones."""
-    cost, proxy = cfg.analysis.cost, cfg.finetune.gaptune.proxy
+    """``seed<s>`` plus the non-default timing settings and ``finetune.gaptune`` options (proxy
+    included), so shortened or resized runs never overwrite full ones."""
+    cost = cfg.analysis.cost
+    gaptune_cfg = cfg.clone()
+    gaptune_cfg.finetune.gaptune.plus = False  # also tag the proxy options GapTune prepares with
     tags = [
         f"seed{seed}",
         tag_if_nondefault("b", int(cost.timing_blocks), cfg_default("analysis.cost.timing_blocks")),
         tag_if_nondefault("u", int(cost.updates), cfg_default("analysis.cost.updates")),
         tag_if_nondefault("e", int(cost.evaluations), cfg_default("analysis.cost.evaluations")),
-        tag_if_nondefault("pxu", int(proxy.updates), cfg_default("finetune.gaptune.proxy.updates")),
+        FinetuneGapTune.variant_tag(gaptune_cfg),
     ]
     return "-".join(tag for tag in tags if tag)
 
@@ -296,7 +285,7 @@ def run_cost_study(cfg) -> int:
     device = torch.device(f"cuda:{cfg.device}" if torch.cuda.is_available() else "cpu")
     generator = torch.Generator().manual_seed(int(wcfg.seed))
     batch = Batch.from_data_list(synthetic_graphs(NUM_GRAPHS, generator))
-    source_graphs = synthetic_graphs(NUM_GRAPHS, generator)
+    source_graphs = synthetic_graphs(SOURCE_GRAPHS, generator, SOURCE_NODES, SOURCE_EDGES)
     encoder = workload_encoder(wcfg)
     census = parameter_census(cfg)
     out_dir = ensure_dir(os.path.join(cfg.analysis.output_dir, "cost", _run_tag(cfg, int(wcfg.seed))))
@@ -315,12 +304,12 @@ def run_cost_study(cfg) -> int:
             print(
                 f"[Analysis][cost] block {block + 1}/{blocks} {METHODS[name][0]}: prep={record['prep_s']:.2f}s "
                 f"update={record['update_ms']:.2f}ms adapt={record['adapt_s']:.2f}s infer={record['infer_ms']:.2f}ms "
-                f"memory prep/adapt={record['prep_mb']:.1f}/{record['adapt_mb']:.1f}MiB"
+                f"memory prep/adapt={record['prep_mib']:.1f}/{record['adapt_mib']:.1f}MiB"
             )
 
     rows = summarize(records, census)
-    _write_tsv(str(out_dir / "blocks.tsv"), records)
-    _write_tsv(str(out_dir / "summary.tsv"), rows)
+    write_tsv(str(out_dir / "blocks.tsv"), records)
+    write_tsv(str(out_dir / "summary.tsv"), rows)
     save_json_atomic(
         str(out_dir / "cost.json"),
         {
@@ -354,7 +343,7 @@ def run_cost_study(cfg) -> int:
             f"[Analysis][cost] {row['label']}: trainable={row['trainable']:,} retained={row['retained_scalars']:,} "
             f"prep={_format(row, 'prep_s', 2)}s update={_format(row, 'update_ms', 2)}ms "
             f"adapt={_format(row, 'adapt_s', 2)}s infer={_format(row, 'infer_ms', 2)}ms "
-            f"total={_format(row, 'total_s', 2)}s memory prep/adapt/peak={_format(row, 'prep_mb', 1)}/"
-            f"{_format(row, 'adapt_mb', 1)}/{_format(row, 'peak_mb', 1)}MiB"
+            f"total={_format(row, 'total_s', 2)}s memory prep/adapt/peak={_format(row, 'prep_mib', 1)}/"
+            f"{_format(row, 'adapt_mib', 1)}/{_format(row, 'peak_mib', 1)}MiB"
         )
     return 0

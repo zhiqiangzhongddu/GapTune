@@ -82,8 +82,10 @@ def test_swap_budget_is_the_ceiling_without_float_drift():
 def test_feature_noise_is_shared_and_skips_constant_coordinates():
     g = torch.Generator().manual_seed(4)
     x = torch.randn(NUM_NODES, 5, generator=g)
-    x[:, 2] = 0.1  # constant coordinate whose floating mean is inexact
-    assert feature_sigma(x)[2] == 0
+    x[:, 2] = 0.37  # constant coordinate
+    column = x[:, 2:3].contiguous()  # a contiguous reduction leaves a float residue in the raw SD
+    assert column.std(dim=0, unbiased=False) != 0
+    assert feature_sigma(column) == 0 and feature_sigma(x)[2] == 0
     views = controlled_views(x, _edge_index(), [0.0, 0.1, 0.2], generator=torch.Generator().manual_seed(5))
 
     assert set(views) == {CONTROL} | {(f, a) for f in FAMILIES for a in (0.1, 0.2)}

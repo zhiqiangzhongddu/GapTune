@@ -4,7 +4,8 @@
   ``theta`` and fixes the last basis direction of an odd dimension;
 - rotating prompts preserves every prompt norm and equals rotating every
   value vector (Eq. 70) for gap and free values;
-- the zero angle reproduces the trained predictor exactly.
+- the zero angle reproduces the trained predictor exactly, and the analysis
+  logits equal the task's own evaluation outputs.
 """
 
 from __future__ import annotations
@@ -73,6 +74,9 @@ def test_zero_angle_reproduces_the_trained_predictor():
         for data in loader:
             obs = reference_pass(task, encoder, data).obs
             logits, labels = prompted_logits(task, encoder, data, *task.prompt(obs, data.batch, use_retained=True))
+            # The analysis path is the task's own evaluation forward (encode, readout, head).
+            _, _, task_logits, task_labels = task._forward(encoder, data, CPU, return_outputs=True)
+            assert torch.equal(logits, task_logits) and torch.equal(labels, task_labels)
             correct += int((logits.argmax(dim=-1) == labels).sum())
             total += labels.numel()
     assert measures[0.0] == {"accuracy": 100.0 * correct / total, "norm_deviation": 0.0}

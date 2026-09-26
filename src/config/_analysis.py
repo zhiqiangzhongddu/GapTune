@@ -19,6 +19,13 @@ def set_analysis_cfg(cfg: CN) -> CN:
     cfg.analysis.transfer = CN()
     cfg.analysis.transfer.strengths = [0.05, 0.10, 0.20, 0.30]  # nonzero perturbation strengths A
     cfg.analysis.transfer.bootstrap_samples = 2000  # percentile bootstrap resamples of complete repetitions
+    # App. C.7 prompt values under controlled shifts (src/analysis/controlled_shift.py); arms use finetune.gaptune
+    cfg.analysis.controlled_shift = CN()
+    cfg.analysis.controlled_shift.datasets = ["photo", "chameleon"]  # full graphs, each with its within-dataset checkpoint
+    cfg.analysis.controlled_shift.strengths = [0.0, 0.05, 0.10, 0.20, 0.30, 0.50]  # 0 is the shared control
+    cfg.analysis.controlled_shift.updates = 500  # common full-batch update budget of every arm
+    # support split of each repetition seed; one with validation nodes selects on val_acc (finetune runner rule)
+    cfg.analysis.controlled_shift.fixed_split = (5, 0.0, 1.0)
     # App. C.6 fixed-predictor source-context replacement (src/analysis/replacement.py); proxies use finetune.gaptune.proxy
     cfg.analysis.replacement = CN()
     cfg.analysis.replacement.budgets = [4, 16, 64]  # proxy graphs B per collection

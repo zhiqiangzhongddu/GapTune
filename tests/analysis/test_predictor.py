@@ -26,7 +26,10 @@ def test_finetuned_checkpoints_follow_the_standard_seeds(tmp_path):
     with pytest.raises(ValueError, match="placeholder"):
         finetuned_checkpoints(cfg)
     cfg.finetune.num_runs = 1
-    assert finetuned_checkpoints(cfg) == [(42, str(tmp_path / "ft_seed42.pt"))]
+    # A single explicit file is labelled with its own training seed, not cfg.seeds[0].
+    torch.save({"cfg": {"seed": 0}}, tmp_path / "ft_seed0.pt")
+    cfg.analysis.finetuned_checkpoint = str(tmp_path / "ft_seed0.pt")
+    assert finetuned_checkpoints(cfg) == [(0, str(tmp_path / "ft_seed0.pt"))]
 
 
 def test_study_dir_drops_the_seed_from_the_run_tag(tmp_path):

@@ -118,7 +118,7 @@ def run_rotation(cfg) -> int:
             for angle, m in measures.items()
         ]
         save_json_atomic(
-            os.path.join(out_dir, f"seed{seed}.json"),
+            os.path.join(out_dir, f"rep{seed}.json"),
             {
                 "seed": seed,
                 "checkpoint": checkpoint,
@@ -127,7 +127,7 @@ def run_rotation(cfg) -> int:
                 "measures": {str(angle): m for angle, m in measures.items()},
             },
         )
-        write_tsv(os.path.join(out_dir, f"seed{seed}.tsv"), seed_rows)
+        write_tsv(os.path.join(out_dir, f"rep{seed}.tsv"), seed_rows)
         rows.extend(seed_rows)
     summary = []
     for angle in degrees:
