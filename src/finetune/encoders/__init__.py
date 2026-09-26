@@ -1,7 +1,9 @@
 """Prompt-aware encoder modules for finetuning.
 
-Canonical implementations live in :mod:`src.finetune.encoders.edgeprompt`
-and :mod:`src.finetune.encoders.graphprompt_plus`.
+Canonical implementations live in :mod:`src.finetune.encoders.edgeprompt`,
+:mod:`src.finetune.encoders.graphprompt_plus`, :mod:`src.finetune.encoders.gaptune`
+and :mod:`src.finetune.encoders.mtg`; :mod:`src.finetune.encoders.nodeformer_fixed`
+holds the fixed-projection NodeFormer conv shared by GapTune and MTG.
 """
 
 from .edgeprompt import (

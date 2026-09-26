@@ -24,7 +24,7 @@ set -euo pipefail
 # ROWS_PER_GPU, and --array.
 #
 # Row format (slurm/finetune.tsv, or the file named by $EXPERIMENT_FILE):
-#   Header: model pretrain_dataset pretrain_task_level pretrain_induced pretrain_method dataset task_level induced task_type fixed_split finetune_method graphprompt_plus gpf_plus edgeprompt_plus
+#   Header: model pretrain_dataset pretrain_task_level pretrain_induced pretrain_method dataset task_level induced task_type fixed_split finetune_method graphprompt_plus gpf_plus edgeprompt_plus gaptune_plus
 #   Rows may omit trailing columns; missing values use config defaults.
 # Row count changes over time; the srun script errors out when --array is undersized.
 #
@@ -39,7 +39,7 @@ if [ ! -f "${EXPERIMENT_FILE}" ]; then
   echo "[finetune] ERROR: Experiment file not found: ${EXPERIMENT_FILE}" >&2
   exit 2
 fi
-EXPERIMENT_COLUMNS="dataset|task_level|induced|task_type|fixed_split|pretrained_run_name|finetune_method|model|pretrain_dataset|pretrain_task_level|pretrain_induced|pretrain_method|graphprompt_plus|gpf_plus|edgeprompt_plus|skip_if_exists"
+EXPERIMENT_COLUMNS="dataset|task_level|induced|task_type|fixed_split|pretrained_run_name|finetune_method|model|pretrain_dataset|pretrain_task_level|pretrain_induced|pretrain_method|graphprompt_plus|gpf_plus|edgeprompt_plus|gaptune_plus|skip_if_exists"
 parse_experiment_file "${EXPERIMENT_FILE}" "${EXPERIMENT_COLUMNS}" "[finetune]"
 
 export EXPERIMENT_FILE EXPERIMENT_COLUMNS

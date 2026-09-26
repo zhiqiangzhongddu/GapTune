@@ -6,7 +6,7 @@ from ._dataset import _default_dataset_cfg
 def set_finetune_cfg(cfg: CN) -> None:
     """Attach finetune config defaults to *cfg*."""
     cfg.finetune = CN()
-    cfg.finetune.method = "supervised"  # supervised, all_in_one, edgeprompt, gpf, gppt, graphprompt, pronog
+    cfg.finetune.method = "supervised"  # supervised, all_in_one, edgeprompt, gaptune, gpf, gppt, graphprompt, igap, mtg, pronog, supt
     cfg.finetune.num_runs = 5  # number of finetuning runs with different seeds
     # finetune dataset options
     cfg.finetune.dataset = _default_dataset_cfg()

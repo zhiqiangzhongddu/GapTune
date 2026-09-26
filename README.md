@@ -13,9 +13,8 @@ GNN injects these prompts before a task-native readout and head.
 
 After training, only the pooled source contexts are retained. Inference needs neither source graphs nor proxy graphs.
 
-> **Status.** The shared pipeline is in place: data preparation, 7 GNN encoders, 6 pretraining objectives, scratch
-> training, and 9 of the 12 prompting baselines. The rest is being added under `src/finetune/`: GapTune/GapTune+ with
-> its ablation variants, and the IGAP, MTG and SUPT baselines. This README will document their commands when they land.
+> **Status.** The pipeline is in place: data preparation, 7 GNN encoders, 6 pretraining objectives, scratch training,
+> GapTune/GapTune+ with its ablation variants, and the 12 prompting baselines (including IGAP, MTG and SUPT).
 
 ## Repository layout
 
@@ -127,7 +126,11 @@ python scripts/run_train.py \
 | GPF / GPF+ | `gpf` | `finetune.gpf.plus False` (default) / `True` |
 | GPPT | `gppt` | – |
 | GraphPrompt / GraphPrompt+ | `graphprompt` | `finetune.graphprompt.plus False` (default) / `True` |
+| IGAP | `igap` | – |
+| MTG | `mtg` | – |
 | ProNoG | `pronog` | – |
+| SUPT-soft / SUPT-hard | `supt` | `finetune.supt.variant soft` (default) / `hard` |
+| GapTune / GapTune+ | `gaptune` | `finetune.gaptune.plus False` / `True` (default) |
 
 The pretrained checkpoint is resolved from the `model.*` and `pretrain.*` keys. To load checkpoints from another
 directory, set `pretrain.checkpoint_dir`; to load one file, set `finetune.pretrained_checkpoint`. Each job runs the
@@ -155,6 +158,32 @@ python scripts/run_finetune.py \
 
 `--fewshot S V T` is shorthand for `finetune.dataset.fixed_split "(S,V,T)"`. With `V = 0`, the split has no validation
 set, and checkpoint selection falls back to the training loss. Use `V > 0` for validation-selected checkpoints.
+
+### GapTune
+
+GapTune and IGAP run node and edge targets on induced subgraphs only (`finetune.dataset.induced True`).
+
+- **GapTune+** (`finetune.gaptune.plus True`) samples its fixed source observations from the checkpoint's pretraining
+  graphs, rebuilt with the dataset settings stored in the checkpoint.
+- **GapTune** (`finetune.gaptune.plus False`) inverts proxy source graphs from an EdgePred or GraphCL checkpoint.
+  EdgePred checkpoints with the dot-product scorer need nothing else. GraphCL checkpoints need the retained projection
+  in `extra.pretrain_task_state`. `finetune.gaptune.proxy.mode random` gives the random-proxy control.
+
+The ablation switches (`value_mode`, `prompt_locations`, `query_mode`, `mixture`, `gate`,
+`include_self_loop_messages`) and the proxy settings are listed under `cfg.finetune.gaptune` in
+`src/config/_finetune.py`. `prompt_locations none` is the head-only control with the same readout. In TSVs, the
+`gaptune_plus` column sets `finetune.gaptune.plus`.
+
+```bash
+# cross-dataset: ZINC/GCN/EdgePred -> Photo, 5-shot, source-free GapTune
+python scripts/run_finetune.py \
+  model.name gcn \
+  pretrain.dataset.name zinc pretrain.dataset.task_level graph pretrain.dataset.induced False \
+  pretrain.method edge_pred \
+  finetune.dataset.name photo finetune.dataset.task_level node finetune.dataset.induced True \
+  finetune.method gaptune finetune.gaptune.plus False \
+  --fewshot 5 0.0 1.0 device 0
+```
 
 ## Batch runs on SLURM
 

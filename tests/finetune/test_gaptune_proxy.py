@@ -206,6 +206,15 @@ def test_missing_pretrained_components_and_other_checkpoints_are_rejected():
         _build(_cfg("gcn", "edge_pred", edgepred_neg_pairs=11))
 
 
+def test_pretext_settings_follow_the_checkpoint_cfg():
+    # An explicit finetune.pretrained_checkpoint need not match cfg.pretrain.
+    payload = {**_payload(_cfg("gin", "graphcl")), "cfg": {"seed": 42, "pretrain": {"method": "graphcl"}}}
+    assert _build(_cfg("gin", "edge_pred"), payload=payload)[1]["pretext"] == "graphcl"
+    mlp_payload = {**LEGACY_PAYLOAD, "cfg": {"pretrain": {"method": "edge_pred", "edge_pred": {"use_mlp_scorer": True}}}}
+    with pytest.raises(ValueError, match="MLP edge scorer"):
+        _build(_cfg("gcn", "edge_pred"), payload=mlp_payload)
+
+
 def test_prepare_with_encoder_fills_the_bank_from_proxy_graphs(tmp_path):
     cfg = _cfg("gcn", "edge_pred")
     ds = cfg.finetune.dataset

@@ -29,6 +29,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch_geometric.data import Data
 
+from src.utils.checkpoint import cfg_to_dict
 from src.utils.parsing import to_bool
 
 # Paper D.2 seed streams s + offset (GapTune itself uses s and s + 1).
@@ -136,12 +137,12 @@ def _two_layer(weights):
     return lambda z: F.linear(F.relu(F.linear(z, w1, b1)), w2, b2)
 
 
-def _edgepred_objective(cfg, model, driver, pretrained_payload, device, row, col, conditioning):
+def _edgepred_objective(use_mlp_scorer, model, driver, pretrained_payload, device, row, col, conditioning):
     """Balanced masked-pair loss (Eq. 57) with the original edge scorer."""
     positive, negative = conditioning
     keep = torch.ones(positive.size(0), row.numel(), device=device)
     keep = keep.scatter(1, positive, 0.0).scatter(1, negative, 0.0)
-    if to_bool(cfg.pretrain.edge_pred.use_mlp_scorer):
+    if use_mlp_scorer:
         keys = ("scorer.0.weight", "scorer.0.bias", "scorer.2.weight", "scorer.2.bias")
         mlp = _two_layer(_retained_weights(pretrained_payload, keys, "MLP edge scorer", device))
         score = lambda h_u, h_v: mlp(torch.cat([h_u, h_v], dim=-1)).squeeze(-1)
@@ -199,7 +200,10 @@ def build_proxy_source_graphs(*, cfg, model, driver, pretrained_payload, device)
     pretraining graphs.
     """
     proxy_cfg = cfg.finetune.gaptune.proxy
-    pretext = str(cfg.pretrain.method).lower()
+    # The checkpoint's own pretext settings win (an explicit
+    # finetune.pretrained_checkpoint need not match cfg.pretrain).
+    trained = cfg_to_dict(pretrained_payload.get("cfg") or {}).get("pretrain") or {}
+    pretext = str(trained.get("method") or cfg.pretrain.method).lower()
     mode = str(proxy_cfg.mode)
     if pretext not in _PRETEXTS:
         raise ValueError(
@@ -240,7 +244,10 @@ def build_proxy_source_graphs(*, cfg, model, driver, pretrained_payload, device)
     losses = []
     if updates > 0:
         if pretext == "edge_pred":
-            objective = _edgepred_objective(cfg, model, driver, pretrained_payload, device, row, col, conditioning)
+            use_mlp_scorer = (trained.get("edge_pred") or {}).get("use_mlp_scorer", cfg.pretrain.edge_pred.use_mlp_scorer)
+            objective = _edgepred_objective(
+                to_bool(use_mlp_scorer), model, driver, pretrained_payload, device, row, col, conditioning
+            )
         else:
             objective = _graphcl_objective(
                 proxy_cfg, model, driver, pretrained_payload, device, row, col, _generator(seed + _AUGMENTATION_STREAM)
