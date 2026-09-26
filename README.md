@@ -166,7 +166,14 @@ Each launcher reads rows from a whitespace-separated TSV (`slurm/<workflow>.tsv`
 sbatch --array=0-<N-1> slurm/pretrain.slurm
 sbatch --array=0-<N-1> slurm/train.slurm
 EXPERIMENT_FILE=slurm/my_grid.tsv ROWS_PER_GPU=2 sbatch --array=0-<N-1> slurm/finetune.slurm
+
+# extra config overrides for every row, e.g. reuse pretrained checkpoints from another tree
+EXTRA_ARGS="pretrain.checkpoint_dir <dir>/pretrained_models pretrain.log_dir <dir>/logs/pretrained_models" \
+  sbatch --array=0-<N-1> slurm/finetune.slurm
 ```
+
+The finetune TSV resolves checkpoints through the pretraining metadata logs. When you reuse another tree's
+checkpoints, set `pretrain.log_dir` along with `pretrain.checkpoint_dir`.
 
 The same TSVs run locally with `<workflow>.run_tasks_tsv True <workflow>.tasks_tsv <file>`.
 

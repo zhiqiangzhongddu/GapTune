@@ -27,6 +27,10 @@ set -euo pipefail
 #   Header: model pretrain_dataset pretrain_task_level pretrain_induced pretrain_method dataset task_level induced task_type fixed_split finetune_method graphprompt_plus gpf_plus edgeprompt_plus
 #   Rows may omit trailing columns; missing values use config defaults.
 # Row count changes over time; the srun script errors out when --array is undersized.
+#
+# Optional $EXTRA_ARGS: whitespace-separated config overrides appended to every
+# row's python call, e.g. to read pretrained checkpoints from another tree:
+#   EXTRA_ARGS="pretrain.checkpoint_dir <dir> pretrain.log_dir <logdir>" sbatch slurm/finetune.slurm
 
 source "${SLURM_SUBMIT_DIR:-.}/slurm/_common.sh"
 
@@ -94,6 +98,7 @@ fi
 
 cd "${ROOT_DIR}"
 log "Using python=$(command -v python) conda_prefix=${CONDA_PREFIX:-unset}"
+read -r -a EXTRA_ARGV <<< "${EXTRA_ARGS:-}"
 
 ASSIGNED_ROWS=0
 FAILED_ROWS=0
@@ -119,7 +124,8 @@ for ((ROW_SLOT=0; ROW_SLOT<ROWS_PER_GPU; ROW_SLOT++)); do
     finetune.run_tasks_tsv True \
     finetune.tasks_tsv "${TMPTSV}" \
     finetune.num_runs 5 \
-    device 0
+    device 0 \
+    "${EXTRA_ARGV[@]}"
   RC=$?
   set -e
   rm -f "${TMPTSV}"

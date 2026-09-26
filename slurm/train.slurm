@@ -25,6 +25,10 @@ set -euo pipefail
 #   Header: dataset model task_level task_type induced (+ optional: fixed_split epochs batch skip_if_exists)
 #   Rows may omit trailing columns; missing values use config defaults.
 # Row count changes over time; the srun script errors out when --array is undersized.
+#
+# Optional $EXTRA_ARGS: whitespace-separated config overrides appended to every
+# row's python call, e.g.:
+#   EXTRA_ARGS="train.checkpoint_dir <dir> train.log_dir <logdir>" sbatch slurm/train.slurm
 
 source "${SLURM_SUBMIT_DIR:-.}/slurm/_common.sh"
 
@@ -85,6 +89,7 @@ fi
 
 cd "${ROOT_DIR}"
 log "Using python=$(command -v python) conda_prefix=${CONDA_PREFIX:-unset}"
+read -r -a EXTRA_ARGV <<< "${EXTRA_ARGS:-}"
 
 ASSIGNED_ROWS=0
 FAILED_ROWS=0
@@ -109,7 +114,8 @@ for ((ROW_SLOT=0; ROW_SLOT<ROWS_PER_GPU; ROW_SLOT++)); do
     train.run_tasks_tsv True \
     train.tasks_tsv "${TMPTSV}" \
     train.num_runs 5 \
-    device 0
+    device 0 \
+    "${EXTRA_ARGV[@]}"
   RC=$?
   set -e
   rm -f "${TMPTSV}"

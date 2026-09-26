@@ -10,6 +10,7 @@ from yacs.config import CfgNode as CN
 
 from src.config import set_cfg
 from src.finetune.finetuner import FinetuneRunner
+from src.train.registry import get_train_task_class
 from src.train.trainer import TrainRunner
 
 
@@ -164,6 +165,37 @@ class TrainingSelectionTest(unittest.TestCase):
             self.assertEqual(payload["epoch"], 2)
             self.assertEqual(float(payload["model_state"]["weight"].item()), 2.0)
             self.assertTrue(payload["extra"].get("fallback_save"))
+
+
+class TrainFewShotSplitMonitorTest(unittest.TestCase):
+    """(k, 0.0, 1.0) has no validation set; (k, val>0, test) selects on validation."""
+
+    def _resolve(self, split: tuple) -> TrainRunner:
+        cfg = set_cfg(CN())
+        cfg.train.dataset.fixed_split = split
+        cfg.train.dataset.task_type = "classification"
+        runner = TrainRunner.__new__(TrainRunner)
+        runner.cfg = cfg
+        runner.task_level_raw = "node"
+        runner.task_cls = get_train_task_class("supervised")
+        runner.split = runner._resolve_split()
+        runner._init_monitoring()
+        return runner
+
+    def test_few_shot_without_validation_monitors_train_loss(self) -> None:
+        runner = self._resolve((5, 0.0, 1.0))
+        self.assertEqual(runner.split, (5, 0.0, 1.0))
+        self.assertEqual(runner.monitor_name, "train_loss")
+
+    def test_few_shot_with_validation_is_accepted_and_monitors_val(self) -> None:
+        runner = self._resolve((5, 0.1, 0.8))
+        self.assertEqual(runner.split, (5, 0.1, 0.8))
+        self.assertEqual(runner.monitor_name, "val_acc")
+
+    def test_few_shot_split_rejects_negative_or_empty_heldout_weights(self) -> None:
+        for split in ((5, -0.1, 1.0), (5, 0.0, 0.0)):
+            with self.subTest(split=split), self.assertRaises(ValueError):
+                self._resolve(split)
 
 
 if __name__ == "__main__":

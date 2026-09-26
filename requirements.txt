@@ -14,7 +14,7 @@ numpy==1.26.1
 pandas==2.3.3
 tqdm==4.67.1
 
-# Directly imported scientific/config packages (do not rely on transitive deps)
+# Pinned for reproducibility (scikit-learn is imported directly; PyG needs scipy, yacs needs PyYAML)
 scipy==1.15.3
 scikit-learn==1.7.2
 PyYAML==6.0.3

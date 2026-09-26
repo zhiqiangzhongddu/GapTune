@@ -27,6 +27,10 @@ set -euo pipefail
 #   Rows without seed use cfg.seeds[0]; rows with seed run that single seed.
 # Size --array as ceil(rows / (4 tasks * ROWS_PER_GPU)) elements; the srun
 # script errors out when --array is undersized.
+#
+# Optional $EXTRA_ARGS: whitespace-separated config overrides appended to every
+# row's python call, e.g.:
+#   EXTRA_ARGS="pretrain.checkpoint_dir <dir> pretrain.log_dir <logdir>" sbatch slurm/pretrain.slurm
 
 source "${SLURM_SUBMIT_DIR:-.}/slurm/_common.sh"
 
@@ -90,6 +94,7 @@ cd "${ROOT_DIR}"
 # Reduce GPU memory fragmentation (large reserved-but-unallocated blocks).
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 log "Using python=$(command -v python) conda_prefix=${CONDA_PREFIX:-unset}"
+read -r -a EXTRA_ARGV <<< "${EXTRA_ARGS:-}"
 
 ASSIGNED_ROWS=0
 FAILED_ROWS=0
@@ -113,7 +118,8 @@ for ((ROW_SLOT=0; ROW_SLOT<ROWS_PER_GPU; ROW_SLOT++)); do
   python "${ROOT_DIR}/scripts/run_pretrain.py" \
     pretrain.run_tasks_tsv True \
     pretrain.tasks_tsv "${TMPTSV}" \
-    device 0
+    device 0 \
+    "${EXTRA_ARGV[@]}"
   RC=$?
   set -e
   rm -f "${TMPTSV}"
