@@ -20,6 +20,19 @@ from .graphprompt_plus import (
     resolve_graphprompt_plus_spec,
     supported_graphprompt_plus_backbones,
 )
+from .gaptune import (
+    GAPTUNE_DRIVERS,
+    DriverOutput,
+    GapTuneDriver,
+    GapTuneObservations,
+    GapTuneSpec,
+    LayerObs,
+    build_gaptune_driver,
+    get_gaptune_driver,
+    resolve_gaptune_spec,
+    supported_gaptune_backbones,
+)
+from .nodeformer_fixed import build_fixed_projections, nodeformer_conv_forward
 
 __all__ = [
     "PROMPT_ENCODERS",
@@ -34,4 +47,16 @@ __all__ = [
     "build_graphprompt_plus_adapter",
     "resolve_graphprompt_plus_spec",
     "supported_graphprompt_plus_backbones",
+    "GAPTUNE_DRIVERS",
+    "DriverOutput",
+    "GapTuneDriver",
+    "GapTuneObservations",
+    "GapTuneSpec",
+    "LayerObs",
+    "build_gaptune_driver",
+    "get_gaptune_driver",
+    "resolve_gaptune_spec",
+    "supported_gaptune_backbones",
+    "build_fixed_projections",
+    "nodeformer_conv_forward",
 ]

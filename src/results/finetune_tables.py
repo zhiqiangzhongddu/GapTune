@@ -117,12 +117,17 @@ PROMPT_METHODS: tuple[FinetuneSpec, ...] = (
     FinetuneSpec("all_in_one", "All-in-One"),
     FinetuneSpec("edgeprompt", "EdgePrompt", False),
     FinetuneSpec("edgeprompt", "EdgePrompt Plus", True),
+    FinetuneSpec("gaptune", "GapTune", False),
+    FinetuneSpec("gaptune", "GapTune Plus", True),
     FinetuneSpec("gpf", "GPF", False),
     FinetuneSpec("gpf", "GPF Plus", True),
     FinetuneSpec("gppt", "GPPT"),
     FinetuneSpec("graphprompt", "GraphPrompt", False),
     FinetuneSpec("graphprompt", "GraphPrompt Plus", True),
+    FinetuneSpec("igap", "IGAP"),
+    FinetuneSpec("mtg", "MTG"),
     FinetuneSpec("pronog", "ProNoG"),
+    FinetuneSpec("supt", "SUPT"),
 )
 
 #: Supervised fine-tune rendered as its own per-method table alongside the
@@ -146,6 +151,7 @@ MODEL_LABELS = {
 
 PLUS_COLUMNS = {
     "edgeprompt": "finetune.edgeprompt.plus",
+    "gaptune": "finetune.gaptune.plus",
     "gpf": "finetune.gpf.plus",
     "graphprompt": "finetune.graphprompt.plus",
 }
@@ -650,6 +656,8 @@ def _plus_from_task(task: Mapping[str, Any], finetune_method: str) -> bool | Non
         return _coerce_bool(task.get("gpf_plus"), default=False)
     if finetune_method == "graphprompt":
         return _coerce_bool(task.get("graphprompt_plus"), default=False)
+    if finetune_method == "gaptune":
+        return _coerce_bool(task.get("gaptune_plus"), default=True)
     return None
 
 
@@ -659,7 +667,7 @@ def _plus_from_result_row(row: Mapping[str, str], finetune_method: str) -> bool 
     values = [row.get(PLUS_COLUMNS[finetune_method], "")]
     if PLUS_COLUMNS[finetune_method] != LEGACY_PLUS_COLUMN:
         values.append(row.get(LEGACY_PLUS_COLUMN, ""))
-    default = True if finetune_method == "edgeprompt" else False
+    default = finetune_method in ("edgeprompt", "gaptune")
     for value in values:
         parsed = _parse_bool(value)
         if parsed is not None:
@@ -1432,6 +1440,7 @@ def _append_status_result_locked(
             "finetune.edgeprompt.plus",
             "finetune.gpf.plus",
             "finetune.graphprompt.plus",
+            "finetune.gaptune.plus",
             "result_status",
             "seeds",
             "best_epochs",

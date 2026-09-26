@@ -80,6 +80,7 @@ from .dataset_cfg import resolve_target_dataset_cfg
 from .encoders.edgeprompt import build_prompt_encoder
 from .frozen_load import check_frozen_encoder_load
 from .registry import build_finetune_task, get_finetune_task_class
+from .target_stats import preserve_loader_rng
 from .task_base import _VALID_FROZEN_ENCODER_MODES, FinetuneTask
 
 _BEST_TEST_METRICS_TO_PRINT = ("test_acc", "test_micro_f1", "test_macro_f1", "test_auc", "test_mae", "test_mse")
@@ -422,6 +423,18 @@ class FinetuneRunner:
         self.multilabel_target_stats = self.task.fit_multilabel_target_stats(
             self.train_loader
         )
+        # Optional one-time task preparation with the frozen encoder (e.g.
+        # GapTune's fixed source-observation bank). Kept invisible to later
+        # data ordering, like the target statistics above.
+        prepare = getattr(self.task, "prepare_with_encoder", None)
+        if prepare is not None:
+            with preserve_loader_rng(self.train_loader):
+                prepare(
+                    model=self.model,
+                    train_loader=self.train_loader,
+                    device=self.device,
+                    pretrained_checkpoint=self.pretrained_checkpoint,
+                )
         self._log_training_setup()
 
     def _log_training_setup(self) -> None:

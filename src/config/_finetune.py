@@ -84,6 +84,84 @@ def set_finetune_cfg(cfg: CN) -> None:
     cfg.finetune.gpf.freeze_encoder_bn_when_frozen = True  # keep frozen encoder BN stats fixed during prompt tuning
     cfg.finetune.gpf.prefer_non_induced_node = True  # intentional: node GPF runs on the full graph with masks
     cfg.finetune.gpf.monitor_train_loss = False  # when True, auto monitor train_loss even when val split exists
+    # supt finetuning method-specific options
+    cfg.finetune.supt = CN()
+    cfg.finetune.supt.freeze_encoder = True  # SUPT tunes prompts only; encoder must be frozen
+    cfg.finetune.supt.variant = "soft"  # soft (official DiffPoolPrompt: per-node softmax mixture of bases) or hard (official SAGPoolPrompt: per-graph top-k nodes per basis)
+    cfg.finetune.supt.num_bases = 5  # number of prompt bases k (official README commands use 5)
+    cfg.finetune.supt.ratio = 0.4  # hard only: per-graph selection ratio r in (0, 1); ceil(r * N_g) nodes per basis
+    cfg.finetune.supt.hard_score = "tanh"  # hard only: tanh (official default) or graph_softmax (official --softmax: per-graph softmax over nodes)
+    cfg.finetune.supt.orth_loss = False  # when True (and num_bases > 1) orthogonal basis init plus ||B B^T - I||_F added to the loss
+    cfg.finetune.supt.gcn_bias = True  # bias of the GCNConv scorer (official code; paper Eq. 5 omits it)
+    cfg.finetune.supt.head_layers = 1  # prediction head depth, built like GPF's head
+    cfg.finetune.supt.head_hidden_dim = 0  # <=0 uses input representation dim for hidden layers
+    cfg.finetune.supt.head_dropout = 0.0  # optional dropout between MLP head layers
+    cfg.finetune.supt.lr = None  # None falls back to finetune.lr at runtime
+    cfg.finetune.supt.weight_decay = None  # None falls back to finetune.weight_decay at runtime
+    cfg.finetune.supt.prompt_lr = None  # None falls back to supt.lr (then finetune.lr) at runtime
+    cfg.finetune.supt.prompt_weight_decay = None  # None falls back to supt.weight_decay (then finetune.weight_decay) at runtime
+    cfg.finetune.supt.head_lr = None  # None falls back to supt.lr (then finetune.lr) at runtime
+    cfg.finetune.supt.head_weight_decay = None  # None falls back to supt.weight_decay (then finetune.weight_decay) at runtime
+    cfg.finetune.supt.freeze_encoder_bn_when_frozen = True  # keep frozen encoder BN stats fixed during prompt tuning (as GPF)
+    # igap finetuning method-specific options
+    cfg.finetune.igap = CN()
+    cfg.finetune.igap.freeze_encoder = True  # IGAP tunes prompts + head only; encoder must be frozen
+    cfg.finetune.igap.num_signal_prompts = 16  # L graph-signal prompt bases P_s (paper default)
+    cfg.finetune.igap.num_eigvecs = 32  # K lowest-frequency Laplacian eigenvectors aligned by P_t (paper default)
+    cfg.finetune.igap.tau = 0.1  # temperature of the cosine label-prototype logits (P_l)
+    cfg.finetune.igap.use_signal_prompt = True  # False = paper ablation "No P_s"
+    cfg.finetune.igap.use_spectral_prompt = True  # False = paper ablation "No P_t"
+    cfg.finetune.igap.use_label_prompt = True  # False = paper ablation "No P_l, end2end" (always off for regression)
+    cfg.finetune.igap.head_hidden_dim = 0  # hidden width of the 2-layer ReLU head; <=0 uses model.out_dim
+    cfg.finetune.igap.lr = None  # None falls back to finetune.lr at runtime
+    cfg.finetune.igap.weight_decay = None  # None falls back to finetune.weight_decay at runtime
+    # mtg finetuning method-specific options
+    cfg.finetune.mtg = CN()
+    cfg.finetune.mtg.freeze_encoder = True  # MTG tunes message prototypes + head only; encoder must be frozen
+    cfg.finetune.mtg.num_prototypes = 10  # m message prototypes per layer (official default)
+    cfg.finetune.mtg.lr = None  # None falls back to finetune.lr at runtime
+    cfg.finetune.mtg.weight_decay = None  # None falls back to finetune.weight_decay at runtime
+    # gaptune finetuning method-specific options (paper Table 17; ablations App. C)
+    cfg.finetune.gaptune = CN()
+    cfg.finetune.gaptune.freeze_encoder = True  # GapTune tunes prompts + head only; encoder must be frozen
+    cfg.finetune.gaptune.plus = True  # True: GapTune+ (pretraining graphs as source); False: GapTune (source-free proxy graphs)
+    cfg.finetune.gaptune.num_queries = 8  # K queries per observation type
+    cfg.finetune.gaptune.tau_c = 0.5  # context-pooling temperature (Eq. 8)
+    cfg.finetune.gaptune.tau_p = 0.5  # local-relevance temperature (Eq. 11)
+    cfg.finetune.gaptune.obs_eps = 1e-6  # eps of the observation normalization nu(z) = z / sqrt(||z||^2 + eps^2)
+    cfg.finetune.gaptune.value_mode = "gap"  # gap, target, source, paired_mean, or free (learned values replacing the queries)
+    cfg.finetune.gaptune.prompt_locations = "node_message"  # node_message, node, message, or none (head-only control, same readout)
+    cfg.finetune.gaptune.query_mode = "shared"  # shared, frozen (queries not trained), or untied (separate source/target queries)
+    cfg.finetune.gaptune.mixture = "local"  # local (Eq. 11), uniform (1/K), or global (learned logits shared per type)
+    cfg.finetune.gaptune.gate = "signed"  # signed (tanh) or nonnegative (theta projected onto [0, inf) after every step)
+    cfg.finetune.gaptune.source_max_nodes = 512  # fixed source sample: node observations
+    cfg.finetune.gaptune.source_max_messages = 2048  # fixed source sample: directed messages per layer
+    cfg.finetune.gaptune.include_self_loop_messages = True  # False drops self-loop messages from pooling and prompting
+    cfg.finetune.gaptune.lr = None  # None falls back to finetune.lr at runtime
+    cfg.finetune.gaptune.weight_decay = None  # None falls back to finetune.weight_decay at runtime
+    cfg.finetune.gaptune.grad_clip = 5.0  # global norm clip of the trainable gradients
+    # source-free proxy construction for plus=False (paper App. B.8, Table 18)
+    cfg.finetune.gaptune.proxy = CN()
+    cfg.finetune.gaptune.proxy.mode = "inverted"  # inverted (pretext-optimized proxies) or random (same init, no optimization)
+    cfg.finetune.gaptune.proxy.num_graphs = 16  # B proxy graphs
+    cfg.finetune.gaptune.proxy.num_nodes = 32  # nodes per proxy graph
+    cfg.finetune.gaptune.proxy.updates = 1000  # joint inversion updates (last iterate kept)
+    cfg.finetune.gaptune.proxy.lr = 1e-2  # Adam learning rate of the inversion
+    cfg.finetune.gaptune.proxy.grad_clip = 5.0  # gradient-norm clip of the inversion
+    cfg.finetune.gaptune.proxy.lambda_x = 1e-4  # feature regularizer weight
+    cfg.finetune.gaptune.proxy.lambda_a = 1.0  # density regularizer weight
+    cfg.finetune.gaptune.proxy.density = 4 / 31  # rho, density prior (output bias log(rho / (1 - rho)))
+    cfg.finetune.gaptune.proxy.final_edges = 64  # undirected edges kept per proxy graph
+    cfg.finetune.gaptune.proxy.edge_hidden = 128  # hidden width of the shared edge MLP
+    cfg.finetune.gaptune.proxy.feature_radius = 10.0  # proxy feature rows projected onto this ball
+    cfg.finetune.gaptune.proxy.tau_start = 1.0  # relaxation temperature at update 0
+    cfg.finetune.gaptune.proxy.tau_end = 0.1  # relaxation temperature at the last update (geometric schedule)
+    cfg.finetune.gaptune.proxy.edgepred_pos_pairs = 32  # EdgePred positive conditioning pairs per proxy
+    cfg.finetune.gaptune.proxy.edgepred_neg_pairs = 32  # EdgePred negative conditioning pairs per proxy
+    cfg.finetune.gaptune.proxy.edgepred_logit = 2.1972245773362196  # log(9), fixed conditioning-pair logit magnitude
+    cfg.finetune.gaptune.proxy.graphcl_tau = 0.2  # GraphCL NT-Xent temperature
+    cfg.finetune.gaptune.proxy.graphcl_edge_drop = 0.1  # GraphCL undirected edge-drop probability
+    cfg.finetune.gaptune.proxy.graphcl_feature_mask = 0.1  # GraphCL elementwise feature-mask probability
     # gppt finetuning method-specific options
     cfg.finetune.gppt = CN()
     cfg.finetune.gppt.freeze_encoder = True  # GPPT tunes prompts only; encoder must be frozen

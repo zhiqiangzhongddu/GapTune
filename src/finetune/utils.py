@@ -40,7 +40,7 @@ from src.utils.tsv_parsing import (
     set_cfg_field_and_track,
 )
 
-_FINETUNE_METHODS = {"supervised", "all_in_one", "edgeprompt", "gpf", "gppt", "graphprompt", "pronog"}
+_FINETUNE_METHODS = {"supervised", "all_in_one", "edgeprompt", "gaptune", "gpf", "gppt", "graphprompt", "igap", "mtg", "pronog", "supt"}
 _SEED_IN_RUN_NAME_RE = re.compile(r"(?:^|_)seed(-?\d+)(?:_|$)")
 
 # All recognised column names for header-based TSV parsing.
@@ -54,7 +54,7 @@ _HEADER_COLUMNS = {
     # Pretrain source columns (used by test experiments).
     "model", "pretrain_dataset", "pretrain_task_level", "pretrain_induced", "pretrain_method",
     # Method variant columns.
-    "graphprompt_plus", "gpf_plus", "edgeprompt_plus",
+    "graphprompt_plus", "gpf_plus", "edgeprompt_plus", "gaptune_plus",
 }
 
 _REQUIRED_COLUMNS = ("dataset", "task_level", "induced")
@@ -115,6 +115,7 @@ def _task_identity(task: dict[str, Any]) -> tuple[Any, ...]:
         task.get("graphprompt_plus"),
         task.get("gpf_plus"),
         task.get("edgeprompt_plus"),
+        task.get("gaptune_plus"),
         task.get("skip_if_exists"),
     )
 
@@ -135,7 +136,7 @@ def _finetune_custom_parser(col: str, val: str, line_no: int) -> tuple[Any, bool
     if col == "pretrained_run_name":
         return (None if val in ("-", "_") else val), True
 
-    if col in ("graphprompt_plus", "gpf_plus", "edgeprompt_plus"):
+    if col in ("graphprompt_plus", "gpf_plus", "edgeprompt_plus", "gaptune_plus"):
         if val in ("-", "_", ""):
             return None, True
         if not looks_bool(val):
@@ -757,6 +758,8 @@ def _build_task_cfg(base_cfg, task: dict[str, Any], checkpoint_meta: dict[str, A
         run_cfg.finetune.gpf.plus = bool(task["gpf_plus"])
     if task.get("edgeprompt_plus") is not None:
         run_cfg.finetune.edgeprompt.plus = bool(task["edgeprompt_plus"])
+    if task.get("gaptune_plus") is not None:
+        run_cfg.finetune.gaptune.plus = bool(task["gaptune_plus"])
 
     # Only mark pretrain provenance as explicit when the value actually came
     # from checkpoint metadata or TSV source columns — not from stale defaults.
@@ -776,6 +779,8 @@ def _build_task_cfg(base_cfg, task: dict[str, Any], checkpoint_meta: dict[str, A
         explicit_keys.append("finetune.gpf.plus")
     if task.get("edgeprompt_plus") is not None:
         explicit_keys.append("finetune.edgeprompt.plus")
+    if task.get("gaptune_plus") is not None:
+        explicit_keys.append("finetune.gaptune.plus")
     set_explicit_cfg_keys(run_cfg, explicit_keys)
     return run_cfg
 
