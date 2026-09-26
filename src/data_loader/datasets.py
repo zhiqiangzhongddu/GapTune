@@ -122,6 +122,19 @@ warnings.filterwarnings(
 
 # Note: we don't touch any dynamic, 3D, relational or heterogeneous datasets in this project.
 
+# Queried-edge masking rule of ``_edge_induced_subgraph``: both directions of the
+# query pair are removed.  Legacy caches without the meta key used this rule;
+# caches stamped with any other rule (e.g. ``queried_direction_only``) keep a
+# directed copy of their own query edge and must be treated as a miss.
+EDGE_QUERIED_EDGE_MASKING = "both_directions"
+
+
+def _reject_stale_edge_masking(payload: dict | None) -> dict | None:
+    if payload is None:
+        return None
+    masking = payload.get("meta", {}).get("queried_edge_masking", EDGE_QUERIED_EDGE_MASKING)
+    return payload if masking == EDGE_QUERIED_EDGE_MASKING else None
+
 
 def _induced_feature_identity(
     *,
@@ -614,6 +627,7 @@ def create_dataset(
                     cache_meta["edge_split_sha256"] = split_digest.hexdigest()
                     cache_path = _induced_cache_path(base_name, "edge", cache_root_path, cache_suffix) if cache_root_path else None
                     payload = _load_induced_cache(cache_path, cache_meta) if cache_induced and cache_path else None
+                    payload = _reject_stale_edge_masking(payload)
                     if payload is None and cache_induced and cache_path:
                         if require_induced_cache_hit:
                             raise RuntimeError(
@@ -621,7 +635,7 @@ def create_dataset(
                                 f"split={_split_suffix(split_def)} seed={int(seed)} path={cache_path}"
                             )
                         cache_build_lock = _acquire_induced_cache_build_lock(cache_path)
-                        payload = _load_induced_cache(cache_path, cache_meta)
+                        payload = _reject_stale_edge_masking(_load_induced_cache(cache_path, cache_meta))
                     if payload:
                         if cache_path:
                             print(f"[Induced] Loaded cached induced edge graphs from {cache_path}")
@@ -698,7 +712,7 @@ def create_dataset(
                                 "split_tags": split_tags,
                                 "base_num_nodes": getattr(base_data, "num_nodes", None),
                                 "base_num_edges": getattr(base_data, "num_edges", None),
-                                "meta": cache_meta,
+                                "meta": {**cache_meta, "queried_edge_masking": EDGE_QUERIED_EDGE_MASKING},
                             },
                         )
                         print(f"[Induced] Saved induced edge graphs to {cache_path}")
