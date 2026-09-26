@@ -8,7 +8,7 @@ import torch
 from torch_geometric.data import Data
 
 from src.data_loader.dataset_loader import make_loaders
-from src.data_loader.datasets import _induced_feature_identity, _induced_feature_tag
+from src.data_loader.datasets import _induced_feature_identity, _induced_feature_tag, create_dataset
 from src.data_loader.summary import DatasetSummaryRow, _load_existing_summary_rows, _rows_to_tsv
 
 
@@ -93,6 +93,68 @@ class InducedCacheIdentityTest(unittest.TestCase):
         other_source = dict(svd100, feature_source="persisted_svd:/other")
         tags = {_induced_feature_tag(value) for value in (raw, svd100, svd64, other_source)}
         self.assertEqual(len(tags), 4)
+
+
+class EdgeInducedCacheMaskingRuleTest(unittest.TestCase):
+    """Edge caches stamped with a non-both-direction masking rule are misses."""
+
+    def _create(self, tmp, **kwargs):
+        generator = torch.Generator().manual_seed(0)
+        src = torch.randint(0, 40, (160,), generator=generator)
+        dst = torch.randint(0, 40, (160,), generator=generator)
+        keep = src != dst
+        data = Data(x=torch.randn(40, 4, generator=generator),
+                    edge_index=torch.stack([src[keep], dst[keep]]), num_nodes=40)
+
+        class ToyDataset:
+            root = str(Path(tmp) / "raw")
+
+            def __getitem__(self, index):
+                return data
+
+        with patch("src.data_loader.datasets._load_node_dataset", return_value=ToyDataset()):
+            return create_dataset(
+                "toy", root=tmp, task_level="edge", feat_reduction=False, induced=True,
+                induced_max_hops=1, split=(0.2, 0.1, 0.1), seed=0,
+                split_root=str(Path(tmp) / "splits"), induced_root=str(Path(tmp) / "induced"),
+                **kwargs,
+            )
+
+    def _cache_path(self, tmp):
+        (path,) = (Path(tmp) / "induced").rglob("*_induced_edge_*.pt")
+        return path
+
+    def _stamp(self, path, masking):
+        payload = torch.load(path)
+        payload["graphs"], payload["split_tags"] = payload["graphs"][:1], payload["split_tags"][:1]
+        if masking is None:
+            payload["meta"].pop("queried_edge_masking")
+        else:
+            payload["meta"]["queried_edge_masking"] = masking
+        torch.save(payload, path)
+
+    def test_fresh_cache_records_both_direction_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            full = self._create(tmp)
+            self.assertGreater(len(full), 1)
+            meta = torch.load(self._cache_path(tmp))["meta"]
+            self.assertEqual(meta["queried_edge_masking"], "both_directions")
+
+    def test_legacy_cache_without_rule_is_reused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._create(tmp)
+            self._stamp(self._cache_path(tmp), None)
+            self.assertEqual(len(self._create(tmp, require_induced_cache_hit=True)), 1)
+
+    def test_directed_only_cache_is_rebuilt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            full = len(self._create(tmp))
+            path = self._cache_path(tmp)
+            self._stamp(path, "queried_direction_only")
+            with self.assertRaisesRegex(RuntimeError, "Required induced edge cache miss"):
+                self._create(tmp, require_induced_cache_hit=True)
+            self.assertEqual(len(self._create(tmp)), full)
+            self.assertEqual(torch.load(path)["meta"]["queried_edge_masking"], "both_directions")
 
 
 if __name__ == "__main__":

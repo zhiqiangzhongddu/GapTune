@@ -28,6 +28,7 @@ from src.finetune.methods.gaptune import FinetuneGapTune
 from src.finetune.methods.gaptune_proxy import _edgepred_templates, build_proxy_source_graphs
 from src.model.encoder import build_encoder_from_cfg
 from src.pretrain.methods import EdgePrediction, GraphCL
+from src.utils.checkpoint import cfg_to_dict
 
 IN_DIM = 6
 NUM_GRAPHS, NUM_NODES, FINAL_EDGES = 2, 6, 5
@@ -78,11 +79,13 @@ def _payload(cfg):
 
 def _build(cfg, *, encoder=None, driver=None, payload=None):
     encoder = _encoder(cfg) if encoder is None else encoder
+    payload = _payload(cfg) if payload is None else payload
     return build_proxy_source_graphs(
         cfg=cfg,
         model=encoder,
         driver=get_gaptune_driver(encoder) if driver is None else driver,
-        pretrained_payload=_payload(cfg) if payload is None else payload,
+        pretrain_cfg=cfg_to_dict(payload["cfg"]),
+        pretrain_extra=payload.get("extra") or {},
         device=torch.device("cpu"),
     )
 
@@ -215,7 +218,7 @@ def test_pretext_settings_follow_the_checkpoint_cfg():
         _build(_cfg("gcn", "edge_pred"), payload=mlp_payload)
 
 
-def test_prepare_with_encoder_fills_the_bank_from_proxy_graphs(tmp_path):
+def test_prepare_with_encoder_fills_the_bank_from_proxy_graphs():
     cfg = _cfg("gcn", "edge_pred")
     ds = cfg.finetune.dataset
     ds.name, ds.task_level, ds.task_level_raw, ds.task_level_effective = "toy", "node", "node", "graph"
@@ -223,10 +226,12 @@ def test_prepare_with_encoder_fills_the_bank_from_proxy_graphs(tmp_path):
     encoder = _encoder(cfg)
     task = FinetuneGapTune(cfg)
     task.validate_encoder(encoder)
-    checkpoint = tmp_path / "pretrained.pt"
-    torch.save(_payload(cfg), checkpoint)
+    payload = _payload(cfg)
     task.prepare_with_encoder(
-        model=encoder, train_loader=None, device=torch.device("cpu"), pretrained_checkpoint=str(checkpoint)
+        model=encoder,
+        device=torch.device("cpu"),
+        pretrain_cfg=cfg_to_dict(payload["cfg"]),
+        pretrain_extra=payload.get("extra") or {},
     )
     meta = task.initialization_metadata
     assert meta["source"] == "proxy" and meta["graphs_total"] == NUM_GRAPHS

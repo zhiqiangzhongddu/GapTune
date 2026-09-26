@@ -212,11 +212,9 @@ class ContextGapPrompt(nn.Module):
         prompt_locations: str = "node_message",
         query_mode: str = "shared",
         mixture: str = "local",
-        include_self_loop_messages: bool = True,
         generator: torch.Generator | None = None,
     ):
         super().__init__()
-        self.include_self_loop_messages = bool(include_self_loop_messages)
         kwargs = dict(
             num_queries=num_queries,
             tau_c=tau_c,
@@ -274,15 +272,7 @@ class ContextGapPrompt(nn.Module):
         descriptors = torch.cat(
             [layer.inputs[layer.sender], layer.inputs[layer.receiver], layer.messages], dim=-1
         )
-        graph_id = batch[layer.receiver]
-        if self.include_self_loop_messages:
-            return prompt(layer.messages, descriptors, graph_id, num_graphs, use_retained=use_retained)
-        # Self-loop messages are neither pooled nor prompted.
-        keep = layer.sender != layer.receiver
-        values = prompt(layer.messages[keep], descriptors[keep], graph_id[keep], num_graphs, use_retained=use_retained)
-        if values is None:
-            return None
-        return layer.messages.new_zeros(layer.messages.shape).index_put((keep,), values)
+        return prompt(layer.messages, descriptors, batch[layer.receiver], num_graphs, use_retained=use_retained)
 
 
 __all__ = [

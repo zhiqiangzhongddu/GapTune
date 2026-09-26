@@ -145,6 +145,18 @@ def _per_graph_segments(batch: torch.Tensor):
     return list(zip(starts, ends))
 
 
+def _key_features(key, kernel_transformation, projection_matrix, segments):
+    """Key kernel features ``[B, N, H, M]``, computed per graph when segmented.
+
+    The softmax kernel's key stabiliser is a max over the node dim; over the
+    batched tensor it would couple co-batched graphs, because the added
+    ``numerical_stabilizer`` keeps it from cancelling in the attention ratio.
+    """
+    if segments is None:
+        return kernel_transformation(key, False, projection_matrix)
+    return torch.cat([kernel_transformation(key[:, s:e], False, projection_matrix) for s, e in segments], dim=1)
+
+
 def _segmented_numerator_denominator(qs, ks, vs, segments):
     """Per-graph attention sums: nodes must never attend across co-batched graphs.
 
@@ -202,15 +214,14 @@ def kernelized_softmax(
     """
     query = query / math.sqrt(tau)
     key = key / math.sqrt(tau)
-    query_prime = kernel_transformation(query, True, projection_matrix)  # [B, N, H, M]
-    key_prime = kernel_transformation(key, False, projection_matrix)  # [B, N, H, M]
-    query_prime = query_prime.permute(1, 0, 2, 3)  # [N, B, H, M]
-    key_prime = key_prime.permute(1, 0, 2, 3)  # [N, B, H, M]
-    value = value.permute(1, 0, 2, 3)  # [N, B, H, D]
-
     segments = None
     if batch is not None and batch.numel() > 0 and int(batch.max().item()) > 0:
         segments = _per_graph_segments(batch)
+    query_prime = kernel_transformation(query, True, projection_matrix)  # [B, N, H, M]
+    key_prime = _key_features(key, kernel_transformation, projection_matrix, segments)  # [B, N, H, M]
+    query_prime = query_prime.permute(1, 0, 2, 3)  # [N, B, H, M]
+    key_prime = key_prime.permute(1, 0, 2, 3)  # [N, B, H, M]
+    value = value.permute(1, 0, 2, 3)  # [N, B, H, D]
 
     if segments is None:
         z_num = numerator(query_prime, key_prime, value)
@@ -248,15 +259,14 @@ def kernelized_gumbel_softmax(
     """
     query = query / math.sqrt(tau)
     key = key / math.sqrt(tau)
-    query_prime = kernel_transformation(query, True, projection_matrix)  # [B, N, H, M]
-    key_prime = kernel_transformation(key, False, projection_matrix)  # [B, N, H, M]
-    query_prime = query_prime.permute(1, 0, 2, 3)  # [N, B, H, M]
-    key_prime = key_prime.permute(1, 0, 2, 3)  # [N, B, H, M]
-    value = value.permute(1, 0, 2, 3)  # [N, B, H, D]
-
     segments = None
     if batch is not None and batch.numel() > 0 and int(batch.max().item()) > 0:
         segments = _per_graph_segments(batch)
+    query_prime = kernel_transformation(query, True, projection_matrix)  # [B, N, H, M]
+    key_prime = _key_features(key, kernel_transformation, projection_matrix, segments)  # [B, N, H, M]
+    query_prime = query_prime.permute(1, 0, 2, 3)  # [N, B, H, M]
+    key_prime = key_prime.permute(1, 0, 2, 3)  # [N, B, H, M]
+    value = value.permute(1, 0, 2, 3)  # [N, B, H, D]
 
     gumbels = (-torch.empty(key_prime.shape[:-1] + (K,)).exponential_().log()).to(query.device) / tau  # [N, B, H, K]
     key_t_gumbel = key_prime.unsqueeze(3) * gumbels.exp().unsqueeze(4)  # [N, B, H, K, M]

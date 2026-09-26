@@ -40,3 +40,8 @@ per-graph denominators (`kernelized_softmax(..., return_weight=True)`);
 the all-pair aggregate and any native relational bias are unchanged.
 Zero-prompt parity is defined against the native operator given the same
 projections.
+
+**Seed streams.** Minibatch order (paper D.2 stream `s+5`) has no dedicated
+generator: the shared runner draws it from the global seed `s` (finetuner
+`set_seed` + unseeded train-loader shuffle), identically across GapTune arms
+(prompt options, GapTune/GapTune+, proxy mode and budget).

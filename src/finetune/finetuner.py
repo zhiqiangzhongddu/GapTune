@@ -319,6 +319,7 @@ class FinetuneRunner:
             self._loaded_checkpoint.get("model_state", {}),
             strict=False,
         )
+        pretrain_extra = self._loaded_checkpoint.get("extra") or {}
         del self._loaded_checkpoint  # free pretrained weights from CPU memory
         if missing:
             if pretrain_strict:
@@ -431,9 +432,9 @@ class FinetuneRunner:
             with preserve_loader_rng(self.train_loader):
                 prepare(
                     model=self.model,
-                    train_loader=self.train_loader,
                     device=self.device,
-                    pretrained_checkpoint=self.pretrained_checkpoint,
+                    pretrain_cfg=self.pretrain_cfg,
+                    pretrain_extra=pretrain_extra,
                 )
         self._log_training_setup()
 

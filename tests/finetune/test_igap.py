@@ -76,6 +76,20 @@ def mixed_batch(sizes=(3, 7, 5), seed=0):
     return Batch.from_data_list(graphs), graphs
 
 
+def graph_from_edges(edges, num_nodes, gen):
+    edge_index = to_undirected(torch.tensor(edges).t(), num_nodes=num_nodes)
+    return Data(x=torch.randn(num_nodes, IN_DIM, generator=gen), edge_index=edge_index)
+
+
+def cobatched_cycle_batches():
+    """The same 6-cycle (graph 0) batched alone, with a 10-node path and with a 20-leaf star."""
+    gen = torch.Generator().manual_seed(5)
+    cycle = graph_from_edges([(i, (i + 1) % 6) for i in range(6)], 6, gen)
+    path = graph_from_edges([(i, i + 1) for i in range(9)], 10, gen)
+    star = graph_from_edges([(0, i) for i in range(1, 21)], 21, gen)
+    return [Batch.from_data_list([cycle, *others]) for others in ([], [path], [star])]
+
+
 def frozen_encoder(cfg):
     torch.manual_seed(0)
     model = build_encoder_from_cfg(cfg, in_dim=cfg.model.in_dim).eval()
@@ -140,6 +154,19 @@ class LaplacianBasisTest(unittest.TestCase):
             expected = u @ prompt.alignment.t() @ u.t() @ x[batch.ptr[b] : batch.ptr[b + 1]]
             torch.testing.assert_close(projected[batch.ptr[b] : batch.ptr[b + 1]], expected)
 
+    def test_degenerate_basis_independent_of_cobatched_graphs(self):
+        # The 6-cycle has repeated eigenvalues (1, 1, 3, 3); its basis, and hence
+        # U_K P U_K^T for a non-identity P, must not depend on the other graphs in the batch.
+        num_eigvecs = 6
+        p = torch.eye(num_eigvecs, dtype=torch.float64)
+        p += 0.2 * torch.randn(num_eigvecs, num_eigvecs, generator=torch.Generator().manual_seed(4), dtype=torch.float64)
+        projections = []
+        for batch in cobatched_cycle_batches():
+            u = laplacian_eigvecs(batch.edge_index, batch.batch, num_eigvecs)[0, :6]
+            projections.append(u @ p @ u.t())
+        for other in projections[1:]:
+            torch.testing.assert_close(other, projections[0])
+
 
 class SandwichTest(unittest.TestCase):
     def test_equals_eq12_for_linear_spectral_filter(self):
@@ -184,6 +211,19 @@ class SandwichTest(unittest.TestCase):
         with torch.no_grad():
             truncated.prompt.signal.p_list.zero_()
         self.assertFalse(torch.allclose(truncated.encode(model, batch)[0], expected_node, atol=1e-3))
+
+    def test_encode_independent_of_cobatched_graphs(self):
+        cfg = igap_cfg()
+        task = FinetuneIGAP(cfg)
+        model = frozen_encoder(cfg)
+        k = task.prompt.num_eigvecs
+        with torch.no_grad():
+            task.prompt.alignment.add_(0.2 * torch.randn(k, k, generator=torch.Generator().manual_seed(6)))
+        outputs = [task.encode(model, batch) for batch in cobatched_cycle_batches()]
+        node_ref, graph_ref = outputs[0][0][:6], outputs[0][1][0]
+        for node_repr, graph_repr in outputs[1:]:
+            torch.testing.assert_close(node_repr[:6], node_ref)
+            torch.testing.assert_close(graph_repr[0], graph_ref)
 
 
 class TaskTest(unittest.TestCase):

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import torch
-
 from src.finetune.methods.gpf import FinetuneGPF
 from src.finetune.prompts.supt import SUPTPrompt
 from src.finetune.registry import register
@@ -11,6 +9,7 @@ from src.finetune.methods.supervised import FinetuneSupervised
 from src.finetune.task_base import FinetuneTask
 from src.utils.config_helpers import build_prompt_head_optimizer, cfg_default, optimizer_variant_tags, tag_if_nondefault
 from src.utils.parsing import resolve_task_type, to_bool
+from src.utils.pool import get_batch_vector
 from src.utils.supervised_eval import evaluate_epoch_split
 from src.utils.training import run_epoch_loop
 
@@ -155,9 +154,7 @@ class FinetuneSUPT(FinetuneTask):
                 f"SUPT prompt dim mismatch: expected {self.prompt_in_dim}, got {int(x.size(-1))}. "
                 "Ensure finetune dataset features match pretrained model input dimension."
             )
-        batch = getattr(data, "batch", None)
-        if batch is None:
-            batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
+        batch = get_batch_vector(data)
         prompted = data.clone()
         # The scorer sees exactly the edge_index handed to the frozen encoder
         # (induced edge subgraphs already exclude the query edge).

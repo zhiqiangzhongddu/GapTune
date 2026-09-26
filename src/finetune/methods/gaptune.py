@@ -24,7 +24,6 @@ from src.finetune.readouts import readout_input_dim, task_native_readout
 from src.finetune.registry import register
 from src.finetune.task_base import FinetuneTask
 from src.finetune.task_heads import TaskAwareObjective
-from src.utils.checkpoint import cfg_to_dict
 from src.utils.config_helpers import (
     build_prompt_head_optimizer,
     cfg_default,
@@ -44,6 +43,12 @@ from src.utils.supervised_eval import evaluate_epoch_split
 from src.utils.training import run_epoch_loop
 
 # Paper D.2 seed streams s, s+1, ...: initializer and observation sampler.
+# Minibatch order (stream s+5) has no dedicated generator: the shared runner
+# draws it from the global seed s (finetuner ``set_seed`` + unseeded
+# train-loader shuffle). It is identical across GapTune arms (prompt options,
+# GapTune/GapTune+, proxy mode and budget): ``validate_encoder`` draws the same
+# from the global RNG in every arm and source preparation runs under
+# ``preserve_loader_rng``.
 _INIT_STREAM = 0
 _OBSERVATION_STREAM = 1
 # Source graphs are encoded in a random order until every observation pool
@@ -64,7 +69,6 @@ _VARIANT_KEYS = (
     ("g", "gate"),
     ("sn", "source_max_nodes"),
     ("sm", "source_max_messages"),
-    ("noloopmsg", "include_self_loop_messages"),
     ("gc", "grad_clip"),
 )
 _PROXY_VARIANT_KEYS = (
@@ -143,7 +147,6 @@ def sample_source_observations(
     device,
     max_nodes: int,
     max_messages: int,
-    include_self_loop_messages: bool,
     generator: torch.Generator,
 ) -> tuple[dict, dict]:
     """One fixed label-free source sample (paper D.2, Table 17).
@@ -166,10 +169,7 @@ def sample_source_observations(
             obs = driver.forward(model, data, collect=True, projections=projections).obs
         pools.setdefault("N", []).append(obs.h0.cpu())
         for layer, layer_obs in enumerate(obs.layers, start=1):
-            messages = layer_obs.messages
-            if not include_self_loop_messages:
-                messages = messages[layer_obs.sender != layer_obs.receiver]
-            pools.setdefault(f"M{layer}", []).append(messages.cpu())
+            pools.setdefault(f"M{layer}", []).append(layer_obs.messages.cpu())
         encoded += len(chunk)
         sizes = {key: sum(part.size(0) for part in parts) for key, parts in pools.items()}
         if all(size >= _SOURCE_POOL_FACTOR * (max_nodes if key == "N" else max_messages) for key, size in sizes.items()):
@@ -296,7 +296,6 @@ class FinetuneGapTune(FinetuneTask):
             prompt_locations=gt_cfg.prompt_locations,
             query_mode=gt_cfg.query_mode,
             mixture=gt_cfg.mixture,
-            include_self_loop_messages=to_bool(gt_cfg.include_self_loop_messages),
             generator=generator,
         )
         device = next(model.parameters()).device
@@ -306,30 +305,32 @@ class FinetuneGapTune(FinetuneTask):
             # Fixed per-layer projections for every pass (paper B.10).
             self.projections = build_fixed_projections(model, int(self.cfg.seed))
 
-    def prepare_with_encoder(self, *, model, train_loader, device, pretrained_checkpoint) -> None:
-        """Collect and fix the source observations (Algorithm 1, lines 3-8)."""
-        del train_loader  # source contexts use no target data
+    def prepare_with_encoder(self, *, model, device, pretrain_cfg, pretrain_extra) -> None:
+        """Collect and fix the source observations (Algorithm 1, lines 3-8).
+
+        *pretrain_cfg* / *pretrain_extra* are the checkpoint's plain ``cfg``
+        and ``extra`` the runner already loaded; source contexts use no
+        target data.
+        """
         if not self.prompt.types:
             return
         gt_cfg = self.method_cfg
         model.eval()
-        payload = torch.load(pretrained_checkpoint, map_location="cpu")
         if to_bool(gt_cfg.plus):
             # Same dataset/feature settings the checkpoint was pretrained with.
-            payload_cfg = cfg_to_dict(payload.get("cfg") or {})
-            ds_cfg = (payload_cfg.get("pretrain") or {}).get("dataset") or self.cfg.pretrain.dataset
-            graphs = load_pretraining_graphs(self.cfg, ds_cfg, seed=int(payload_cfg.get("seed", self.cfg.seed)))
+            ds_cfg = (pretrain_cfg.get("pretrain") or {}).get("dataset") or self.cfg.pretrain.dataset
+            graphs = load_pretraining_graphs(self.cfg, ds_cfg, seed=int(pretrain_cfg.get("seed", self.cfg.seed)))
             source = {"source": "pretraining", "source_dataset": str(ds_cfg["name"])}
         else:
             graphs, proxy_metadata = build_proxy_source_graphs(
                 cfg=self.cfg,
                 model=model,
                 driver=self.driver,
-                pretrained_payload=payload,
+                pretrain_cfg=pretrain_cfg,
+                pretrain_extra=pretrain_extra,
                 device=device,
             )
             source = {"source": "proxy", "proxy": proxy_metadata}
-        del payload
         observation_seed = int(self.cfg.seed) + _OBSERVATION_STREAM
         banks, sampling = sample_source_observations(
             self.driver,
@@ -339,7 +340,6 @@ class FinetuneGapTune(FinetuneTask):
             device=device,
             max_nodes=int(gt_cfg.source_max_nodes),
             max_messages=int(gt_cfg.source_max_messages),
-            include_self_loop_messages=to_bool(gt_cfg.include_self_loop_messages),
             generator=torch.Generator().manual_seed(observation_seed),
         )
         self.prompt.set_source_bank(banks)

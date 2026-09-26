@@ -25,29 +25,27 @@ from .gpf import GPFPlusPrompt
 def laplacian_eigvecs(edge_index: Tensor, batch: Tensor, num_eigvecs: int) -> Tensor:
     """Return ``[B, M_max, K]`` lowest-frequency eigenvectors of each graph's ``D - A``.
 
-    The adjacency is unweighted, symmetrized and loop-free; ``eigh`` runs in
-    float64 and every eigenvector is sign-canonicalized (largest-magnitude
+    The adjacency is unweighted, symmetrized and loop-free; ``eigh`` runs per
+    graph on its own unpadded Laplacian, in float64 on CPU, so a graph's basis
+    (also inside repeated eigenspaces) does not depend on the co-batched graphs
+    or the device. Every eigenvector is sign-canonicalized (largest-magnitude
     entry positive). Row ``m`` of graph ``b`` is its ``m``-th node in
     ``to_dense_batch`` order. Rows beyond a graph's size and columns beyond its
     node count (``M_b < K``) are exactly zero.
     """
     edge_index, _ = remove_self_loops(edge_index)
     edge_index = to_undirected(edge_index, num_nodes=batch.numel())
-    adj = to_dense_adj(edge_index, batch=batch).double()
-    counts = torch.bincount(batch, minlength=adj.size(0))
-    max_nodes = adj.size(-1)
-    node_mask = torch.arange(max_nodes, device=batch.device).unsqueeze(0) < counts.unsqueeze(1)
-    deg = adj.sum(-1)
-    lap = torch.diag_embed(deg) - adj
-    # lambda_max(D - A) <= 2 * max degree, so padded rows sort after every real eigenpair.
-    lap = lap + torch.diag_embed((~node_mask).double() * (2.0 * deg.max() + 1.0))
-    _, eigvecs = torch.linalg.eigh(lap)
-    eigvecs = eigvecs * (node_mask.unsqueeze(2) & node_mask.unsqueeze(1))
-    peak = eigvecs.gather(1, eigvecs.abs().argmax(dim=1, keepdim=True))
-    eigvecs = eigvecs * torch.where(peak < 0, -1.0, 1.0)
-    if max_nodes < num_eigvecs:
-        eigvecs = F.pad(eigvecs, (0, num_eigvecs - max_nodes))
-    return eigvecs[..., :num_eigvecs]
+    adj = to_dense_adj(edge_index, batch=batch).double().cpu()
+    lap = torch.diag_embed(adj.sum(-1)) - adj
+    counts = torch.bincount(batch, minlength=adj.size(0)).tolist()
+    eigvecs = torch.zeros(adj.size(0), adj.size(1), num_eigvecs, dtype=torch.float64)
+    for b, m in enumerate(counts):
+        if m == 0:
+            continue
+        vec = torch.linalg.eigh(lap[b, :m, :m])[1][:, :num_eigvecs]
+        peak = vec.gather(0, vec.abs().argmax(dim=0, keepdim=True))
+        eigvecs[b, :m, : vec.size(1)] = vec * torch.where(peak < 0, -1.0, 1.0)
+    return eigvecs.to(batch.device)
 
 
 class IGAPPrompt(nn.Module):

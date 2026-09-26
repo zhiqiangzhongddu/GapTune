@@ -136,7 +136,6 @@ def set_finetune_cfg(cfg: CN) -> None:
     cfg.finetune.gaptune.gate = "signed"  # signed (tanh) or nonnegative (theta projected onto [0, inf) after every step)
     cfg.finetune.gaptune.source_max_nodes = 512  # fixed source sample: node observations
     cfg.finetune.gaptune.source_max_messages = 2048  # fixed source sample: directed messages per layer
-    cfg.finetune.gaptune.include_self_loop_messages = True  # False drops self-loop messages from pooling and prompting
     cfg.finetune.gaptune.lr = None  # None falls back to finetune.lr at runtime
     cfg.finetune.gaptune.weight_decay = None  # None falls back to finetune.weight_decay at runtime
     cfg.finetune.gaptune.grad_clip = 5.0  # global norm clip of the trainable gradients

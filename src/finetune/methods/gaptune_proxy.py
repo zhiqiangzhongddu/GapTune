@@ -29,7 +29,6 @@ import torch.nn.functional as F
 from torch import nn
 from torch_geometric.data import Data
 
-from src.utils.checkpoint import cfg_to_dict
 from src.utils.parsing import to_bool
 
 # Paper D.2 seed streams s + offset (GapTune itself uses s and s + 1).
@@ -118,8 +117,8 @@ def _encode(driver, model, features, pair_weight, row, col):
     return driver.forward(model, data, edge_weight=pair_weight.reshape(-1).repeat(2))
 
 
-def _retained_weights(pretrained_payload, keys, component: str, device) -> list[torch.Tensor]:
-    state = (pretrained_payload.get("extra") or {}).get("pretrain_task_state") or {}
+def _retained_weights(pretrain_extra, keys, component: str, device) -> list[torch.Tensor]:
+    state = pretrain_extra.get("pretrain_task_state") or {}
     missing = [key for key in keys if key not in state]
     if missing:
         raise ValueError(
@@ -137,14 +136,14 @@ def _two_layer(weights):
     return lambda z: F.linear(F.relu(F.linear(z, w1, b1)), w2, b2)
 
 
-def _edgepred_objective(use_mlp_scorer, model, driver, pretrained_payload, device, row, col, conditioning):
+def _edgepred_objective(use_mlp_scorer, model, driver, pretrain_extra, device, row, col, conditioning):
     """Balanced masked-pair loss (Eq. 57) with the original edge scorer."""
     positive, negative = conditioning
     keep = torch.ones(positive.size(0), row.numel(), device=device)
     keep = keep.scatter(1, positive, 0.0).scatter(1, negative, 0.0)
     if use_mlp_scorer:
         keys = ("scorer.0.weight", "scorer.0.bias", "scorer.2.weight", "scorer.2.bias")
-        mlp = _two_layer(_retained_weights(pretrained_payload, keys, "MLP edge scorer", device))
+        mlp = _two_layer(_retained_weights(pretrain_extra, keys, "MLP edge scorer", device))
         score = lambda h_u, h_v: mlp(torch.cat([h_u, h_v], dim=-1)).squeeze(-1)
     else:
         score = lambda h_u, h_v: (h_u * h_v).sum(dim=-1)  # original dot-product scorer
@@ -163,10 +162,10 @@ def _edgepred_objective(use_mlp_scorer, model, driver, pretrained_payload, devic
     return objective
 
 
-def _graphcl_objective(proxy_cfg, model, driver, pretrained_payload, device, row, col, generator):
+def _graphcl_objective(proxy_cfg, model, driver, pretrain_extra, device, row, col, generator):
     """Two-view NT-Xent over all ``2B`` views (Eq. 58) with the retained projection."""
     keys = ("projector.fc1.weight", "projector.fc1.bias", "projector.fc2.weight", "projector.fc2.bias")
-    projector = _two_layer(_retained_weights(pretrained_payload, keys, "GraphCL projection", device))
+    projector = _two_layer(_retained_weights(pretrain_extra, keys, "GraphCL projection", device))
     edge_drop, feature_mask = float(proxy_cfg.graphcl_edge_drop), float(proxy_cfg.graphcl_feature_mask)
     tau = float(proxy_cfg.graphcl_tau)
 
@@ -191,7 +190,7 @@ def _top_pairs(scores: torch.Tensor, priority: torch.Tensor, k: int) -> torch.Te
     return ranked[:, :k]
 
 
-def build_proxy_source_graphs(*, cfg, model, driver, pretrained_payload, device):
+def build_proxy_source_graphs(*, cfg, model, driver, pretrain_cfg, pretrain_extra, device):
     """Return ``(graphs, metadata)``: the discrete proxy graphs and a JSON-able dict.
 
     ``graphs`` is a list of ``torch_geometric.data.Data`` with ``x`` ``[n_b, d0]``
@@ -202,7 +201,7 @@ def build_proxy_source_graphs(*, cfg, model, driver, pretrained_payload, device)
     proxy_cfg = cfg.finetune.gaptune.proxy
     # The checkpoint's own pretext settings win (an explicit
     # finetune.pretrained_checkpoint need not match cfg.pretrain).
-    trained = cfg_to_dict(pretrained_payload.get("cfg") or {}).get("pretrain") or {}
+    trained = pretrain_cfg.get("pretrain") or {}
     pretext = str(trained.get("method") or cfg.pretrain.method).lower()
     mode = str(proxy_cfg.mode)
     if pretext not in _PRETEXTS:
@@ -246,11 +245,11 @@ def build_proxy_source_graphs(*, cfg, model, driver, pretrained_payload, device)
         if pretext == "edge_pred":
             use_mlp_scorer = (trained.get("edge_pred") or {}).get("use_mlp_scorer", cfg.pretrain.edge_pred.use_mlp_scorer)
             objective = _edgepred_objective(
-                to_bool(use_mlp_scorer), model, driver, pretrained_payload, device, row, col, conditioning
+                to_bool(use_mlp_scorer), model, driver, pretrain_extra, device, row, col, conditioning
             )
         else:
             objective = _graphcl_objective(
-                proxy_cfg, model, driver, pretrained_payload, device, row, col, _generator(seed + _AUGMENTATION_STREAM)
+                proxy_cfg, model, driver, pretrain_extra, device, row, col, _generator(seed + _AUGMENTATION_STREAM)
             )
         params = [features, *edge_mlp.parameters()]
         optimizer = torch.optim.Adam(params, lr=float(proxy_cfg.lr), betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0)

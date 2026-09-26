@@ -9,16 +9,18 @@
 - exact retention (Prop. B.3), including a reload without the source bank;
 - target pooling never mixes the graphs of a minibatch;
 - ablation switches (value modes, free-value clip, locations, frozen /
-  untied queries, uniform / global mixtures, nonnegative gates, self-loop
-  exclusion); gradients reach Q, W, theta and the head, never the encoder;
-- source sampling caps/determinism, the runner hook, config / run names,
-  TSV column and result-table rows.
+  untied queries, uniform / global mixtures, nonnegative gates); gradients
+  reach Q, W, theta and the head, never the encoder;
+- source sampling caps/determinism, the runner hook, minibatch order
+  (stream s+5) identical across arms, config / run names, TSV column and
+  result-table rows.
 """
 
 from __future__ import annotations
 
 import pytest
 import torch
+from torch.utils.data import DataLoader
 from torch_geometric.data import Batch, Data
 from yacs.config import CfgNode as CN
 
@@ -27,6 +29,7 @@ from src.config import set_cfg
 from src.finetune.methods.gaptune import FinetuneGapTune, sample_source_observations
 from src.finetune.prompts.gaptune import pool_source_context, pool_target_contexts
 from src.finetune.readouts import readout_input_dim, task_native_readout
+from src.finetune.target_stats import preserve_loader_rng
 from src.finetune.utils import _finetune_custom_parser, parse_finetune_tasks
 from src.model.encoder import build_encoder_from_cfg
 from src.results.finetune_tables import PROMPT_METHODS, _plus_from_result_row, _plus_from_task
@@ -99,7 +102,6 @@ def _task(cfg, *, bank: bool = True, in_dim: int = IN_DIM):
             device=torch.device("cpu"),
             max_nodes=512,
             max_messages=2048,
-            include_self_loop_messages=True,
             generator=torch.Generator().manual_seed(1),
         )
         task.prompt.set_source_bank(banks)
@@ -425,8 +427,9 @@ def test_nonnegative_gates_are_projected_after_every_step():
         assert bool((gates >= 0).all()) != expect_negative
 
 
-def test_self_loop_messages_can_be_excluded():
-    task, encoder = _task(_cfg("gcn", include_self_loop_messages=False))
+def test_self_loop_messages_are_prompted():
+    # Paper convention: every directed message, self-loops included.
+    task, encoder = _task(_cfg("gcn"))
     _set_gates(task)
     data = Batch.from_data_list(_graphs())
     obs = _unprompted(task, encoder, data).obs
@@ -434,8 +437,7 @@ def test_self_loop_messages_can_be_excluded():
     for layer, prompt in zip(obs.layers, message_prompts):
         loops = layer.sender == layer.receiver
         assert bool(loops.any())
-        assert torch.count_nonzero(prompt[loops]) == 0
-        assert torch.count_nonzero(prompt[~loops]) > 0
+        assert bool((prompt[loops].abs().sum(dim=-1) > 0).all())
 
 
 # --------------------------------------------------------------------------
@@ -467,10 +469,10 @@ def test_source_sampling_caps_and_determinism():
     task, encoder = _task(cfg, bank=False)
     graphs = _graphs(sizes=[(5, 8)] * 200, seed=2)
 
-    def sample(seed, include_loops=True, max_nodes=4, max_messages=5):
+    def sample(seed, max_nodes=4, max_messages=5):
         return sample_source_observations(
             task.driver, encoder, graphs, projections=None, device=torch.device("cpu"),
-            max_nodes=max_nodes, max_messages=max_messages, include_self_loop_messages=include_loops,
+            max_nodes=max_nodes, max_messages=max_messages,
             generator=torch.Generator().manual_seed(seed),
         )
 
@@ -481,39 +483,41 @@ def test_source_sampling_caps_and_determinism():
     other, _ = sample(2)
     assert all(torch.equal(banks[key], again[key]) for key in banks)
     assert not torch.equal(banks["N"], other["N"])
-    _, with_loops = sample(1, max_nodes=10_000, max_messages=10_000)
-    _, without_loops = sample(1, include_loops=False, max_nodes=10_000, max_messages=10_000)
-    assert with_loops["graphs_encoded"] == 200
-    assert with_loops["pool_sizes"]["M1"] - without_loops["pool_sizes"]["M1"] == 5 * 200
+    _, full = sample(1, max_nodes=10_000, max_messages=10_000)
+    assert full["graphs_encoded"] == 200
 
 
 @pytest.mark.parametrize("plus", (True, False))
-def test_prepare_with_encoder_fills_the_source_bank(tmp_path, monkeypatch, plus):
+def test_prepare_with_encoder_fills_the_source_bank(monkeypatch, plus):
     cfg = _cfg("gcn", plus=plus)
     task, encoder = _task(cfg, bank=False)
-    checkpoint = tmp_path / "pretrained.pt"
-    torch.save({"cfg": {"seed": 42, "pretrain": {"dataset": {"name": "src", "task_level": "graph"}}}}, checkpoint)
+    pretrain_cfg = {"seed": 42, "pretrain": {"dataset": {"name": "src", "task_level": "graph"}}}
+    pretrain_extra = {"pretrain_task_state": {}}
     seen = {}
 
     def fake_load(cfg_, ds_cfg, *, seed):
         seen.update(name=ds_cfg["name"], seed=seed)
         return _graphs(seed=5)
 
-    def fake_proxy(*, cfg, model, driver, pretrained_payload, device):
-        seen.update(proxy=driver is task.driver, payload_seed=pretrained_payload["cfg"]["seed"])
+    def fake_proxy(*, cfg, model, driver, pretrain_cfg, pretrain_extra, device):
+        seen.update(proxy=driver is task.driver, payload_seed=pretrain_cfg["seed"], extra=pretrain_extra)
         return _graphs(seed=6), {"losses": [1.0]}
+
+    def no_reload(*args, **kwargs):
+        raise AssertionError("the runner already loaded the checkpoint")
 
     monkeypatch.setattr(gaptune_module, "load_pretraining_graphs", fake_load)
     monkeypatch.setattr(gaptune_module, "build_proxy_source_graphs", fake_proxy)
+    monkeypatch.setattr(torch, "load", no_reload)
     task.prepare_with_encoder(
-        model=encoder, train_loader=None, device=torch.device("cpu"), pretrained_checkpoint=str(checkpoint)
+        model=encoder, device=torch.device("cpu"), pretrain_cfg=pretrain_cfg, pretrain_extra=pretrain_extra
     )
     meta = task.initialization_metadata
     if plus:
         assert seen == {"name": "src", "seed": 42}
         assert meta["source"] == "pretraining" and meta["source_dataset"] == "src"
     else:
-        assert seen == {"proxy": True, "payload_seed": 42}
+        assert seen == {"proxy": True, "payload_seed": 42, "extra": pretrain_extra}
         assert meta["source"] == "proxy" and meta["proxy"] == {"losses": [1.0]}
     assert meta["observation_seed"] == cfg.seed + 1
     for prompt in task.prompt.types.values():
@@ -523,10 +527,60 @@ def test_prepare_with_encoder_fills_the_source_bank(tmp_path, monkeypatch, plus)
 
 def test_head_only_control_skips_source_preparation():
     task, encoder = _task(_cfg("gcn", prompt_locations="none"), bank=False)
-    task.prepare_with_encoder(
-        model=encoder, train_loader=None, device=torch.device("cpu"), pretrained_checkpoint="/nonexistent.pt"
-    )
+    task.prepare_with_encoder(model=encoder, device=torch.device("cpu"), pretrain_cfg={}, pretrain_extra={})
     assert task.initialization_metadata is None
+
+
+def test_minibatch_order_is_identical_across_arms(monkeypatch):
+    """Paper D.2 stream s+5 is the runner's global seed s: head/prompt building
+    draws the same from the global RNG in every arm, and source preparation
+    (GapTune+ / proxy mode / budget) runs under ``preserve_loader_rng``."""
+    pretrain_cfg = {"seed": 42, "pretrain": {"dataset": {"name": "src"}}}
+
+    def fake_load(cfg_, ds_cfg, *, seed):
+        torch.rand(3)  # a source build may consume the global RNG
+        return _graphs(seed=5)
+
+    def fake_proxy(*, cfg, model, driver, pretrain_cfg, pretrain_extra, device):
+        proxy_cfg = cfg.finetune.gaptune.proxy
+        torch.rand(int(proxy_cfg.num_graphs) * (2 if proxy_cfg.mode == "inverted" else 1))
+        return _graphs(seed=6), {}
+
+    monkeypatch.setattr(gaptune_module, "load_pretraining_graphs", fake_load)
+    monkeypatch.setattr(gaptune_module, "build_proxy_source_graphs", fake_proxy)
+
+    def order(num_graphs=16, mode="inverted", **arm):
+        cfg = _cfg("gcn", **arm)
+        cfg.finetune.gaptune.proxy.num_graphs = num_graphs
+        cfg.finetune.gaptune.proxy.mode = mode
+        encoder = _encoder(cfg)
+        loader = DataLoader(list(range(40)), batch_size=8, shuffle=True)
+        torch.manual_seed(cfg.seed)  # finetuner set_seed(s)
+        task = FinetuneGapTune(cfg)
+        task.validate_encoder(encoder)
+        with preserve_loader_rng(loader):
+            task.prepare_with_encoder(
+                model=encoder, device=torch.device("cpu"), pretrain_cfg=pretrain_cfg, pretrain_extra={}
+            )
+        return [batch.tolist() for _ in range(2) for batch in loader]
+
+    reference = order()
+    arms = [
+        {"plus": False},
+        {"plus": False, "num_graphs": 4},
+        {"plus": False, "mode": "random"},
+        {"num_queries": 4},
+        {"prompt_locations": "node"},
+        {"prompt_locations": "message"},
+        {"prompt_locations": "none"},
+        {"value_mode": "free"},
+        {"query_mode": "frozen"},
+        {"query_mode": "untied"},
+        {"mixture": "global"},
+        {"gate": "nonnegative"},
+    ]
+    for arm in arms:
+        assert order(**arm) == reference, arm
 
 
 # --------------------------------------------------------------------------
@@ -560,7 +614,6 @@ def test_run_names_distinguish_every_arm():
         {"query_mode": "untied"},
         {"mixture": "uniform"},
         {"gate": "nonnegative"},
-        {"include_self_loop_messages": False},
         {"source_max_nodes": 256},
         {"lr": 0.01},
     ]

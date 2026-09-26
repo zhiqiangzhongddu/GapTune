@@ -169,8 +169,8 @@ GapTune and IGAP run node and edge targets on induced subgraphs only (`finetune.
   EdgePred checkpoints with the dot-product scorer need nothing else. GraphCL checkpoints need the retained projection
   in `extra.pretrain_task_state`. `finetune.gaptune.proxy.mode random` gives the random-proxy control.
 
-The ablation switches (`value_mode`, `prompt_locations`, `query_mode`, `mixture`, `gate`,
-`include_self_loop_messages`) and the proxy settings are listed under `cfg.finetune.gaptune` in
+The ablation switches (`value_mode`, `prompt_locations`, `query_mode`, `mixture`, `gate`) and the proxy settings are
+listed under `cfg.finetune.gaptune` in
 `src/config/_finetune.py`. `prompt_locations none` is the head-only control with the same readout. In TSVs, the
 `gaptune_plus` column sets `finetune.gaptune.plus`.
 

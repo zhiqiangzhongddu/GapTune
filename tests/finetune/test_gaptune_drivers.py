@@ -353,6 +353,41 @@ class NodeFormerFixedTest(unittest.TestCase):
         messages = weight[0].unsqueeze(-1) * value[0, sender]
         self.assertTrue(torch.allclose(scatter(messages, receiver, 0, dim_size=n), agg[0], atol=ATOL, rtol=RTOL))
 
+    def test_co_batched_graphs_do_not_couple(self):
+        # The softmax kernel's key stabiliser is a max over nodes; it must be
+        # taken per graph (paper B.10), else graph A's kernel features,
+        # messages and output depend on its batch-mates and their prompts.
+        # Scaled keys make the stabiliser differ between graphs.
+        encoder, driver, proj = _setup("nodeformer")
+        with torch.no_grad():
+            for conv in encoder.model.convs:
+                conv.Wk.weight.mul_(6.0)
+        data = _batch()
+        alone = Batch.from_data_list(data.to_data_list()[:1])
+        in_a = data.batch == 0
+        with torch.no_grad():
+            ref = driver.forward(encoder, alone, collect=True, projections=proj)
+            out = driver.forward(encoder, data, collect=True, projections=proj)
+        close = dict(atol=1e-6, rtol=1e-5)
+        self.assertTrue(torch.allclose(out.node_repr[in_a], ref.node_repr, **close))
+        self.assertTrue(torch.allclose(out.graph_repr[:1], ref.graph_repr, **close))
+        for lo, lr in zip(out.obs.layers, ref.obs.layers):
+            self.assertTrue(torch.allclose(lo.messages[in_a[lo.receiver]], lr.messages, **close))
+
+        prompt = 0.5 * torch.randn(out.obs.h0.shape, generator=torch.Generator().manual_seed(3))
+        prompt[in_a] = 0.0  # prompts on graphs B and C only
+        for training in (False, True):  # training exercises the Gumbel branch
+            with self.subTest(training=training):
+                for conv in encoder.model.convs:
+                    conv.train(training)  # the encoder (dropout) stays in eval
+                with torch.no_grad():
+                    torch.manual_seed(5)
+                    base = driver.forward(encoder, data, projections=proj)
+                    torch.manual_seed(5)
+                    prompted = driver.forward(encoder, data, node_prompt=prompt, projections=proj)
+                self.assertFalse(torch.allclose(prompted.node_repr[~in_a], base.node_repr[~in_a], atol=1e-3))
+                self.assertTrue(torch.allclose(prompted.node_repr[in_a], base.node_repr[in_a], **close))
+
 
 if __name__ == "__main__":
     unittest.main()
