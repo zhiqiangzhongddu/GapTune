@@ -9,9 +9,27 @@ def set_analysis_cfg(cfg: CN) -> CN:
     # seeds of the ten-repetition studies (App. A, C.7): cfg.seeds extended deterministically
     cfg.analysis.repetitions = [42, 0, 100, 123, 2024, 1, 2, 3, 4, 5]
     cfg.analysis.pretrained_checkpoint = ""  # frozen pretrained encoder; "" resolves from pretrain.* / model.*
-    cfg.analysis.finetuned_checkpoint = ""  # restored GapTune(+) predictor (C.5 / C.6); "" resolves from finetune.*
+    # restored GapTune(+) predictor (C.5 / C.6), one per seed of finetune.num_runs ("{seed}" in the path);
+    # "" resolves each seed's checkpoint from finetune.* like the finetune runner
+    cfg.analysis.finetuned_checkpoint = ""
     # App. A.4 context-gap sampling budgets B_H / B_M (unspecified in the paper)
     cfg.analysis.node_budget = 2048
     cfg.analysis.message_budget = 4096
+    # App. A prompt transferability (src/analysis/transfer.py); fits reuse finetune.epochs and EdgePrompt's lr / wd
+    cfg.analysis.transfer = CN()
+    cfg.analysis.transfer.strengths = [0.05, 0.10, 0.20, 0.30]  # nonzero perturbation strengths A
+    cfg.analysis.transfer.bootstrap_samples = 2000  # percentile bootstrap resamples of complete repetitions
+    # App. C.6 fixed-predictor source-context replacement (src/analysis/replacement.py); proxies use finetune.gaptune.proxy
+    cfg.analysis.replacement = CN()
+    cfg.analysis.replacement.budgets = [4, 16, 64]  # proxy graphs B per collection
+    cfg.analysis.replacement.proxy_modes = ["inverted", "random"]
+    # App. C.5 prompt direction at fixed magnitude (src/analysis/rotation.py)
+    cfg.analysis.rotation = CN()
+    cfg.analysis.rotation.degrees = [0, 15, 30, 45, 60, 75, 90]  # theta of R_q(theta)
+    # App. C.10 cost accounting (src/analysis/cost.py); inversion updates and source caps use finetune.gaptune
+    cfg.analysis.cost = CN()
+    cfg.analysis.cost.timing_blocks = 5  # repeated measurements summarized as mean +- sample SD
+    cfg.analysis.cost.updates = 500  # adaptation updates on the fixed batch
+    cfg.analysis.cost.evaluations = 20  # fixed-batch evaluations, one every updates / evaluations updates
 
     return cfg

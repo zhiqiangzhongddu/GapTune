@@ -192,6 +192,18 @@ python scripts/run_finetune.py \
 by default), `output_dir` (a study writes to `<output_dir>/<study>/<run_tag>/`), checkpoint overrides, and the App. A.4
 context-gap sampling budgets `node_budget` and `message_budget`.
 
+`transfer` (App. A, Fig. 1) compares EdgePrompt+ donor prompts with target-trained prompts on Photo views, using a frozen
+Photo/GCN/DGI checkpoint. `analysis.pretrained_checkpoint` or the `pretrain.*` keys select the checkpoint. Every fit uses
+`finetune.epochs` and EdgePrompt's learning rate and weight decay. `analysis.transfer` holds the perturbation strengths
+and the number of bootstrap samples. The study writes `rep<seed>.json`, `conditions.tsv` (one row per repetition and
+view), `curve.tsv` and `correlations.tsv`.
+
+```bash
+python scripts/run_analysis.py analysis.study transfer \
+  model.name gcn pretrain.method dgi pretrain.dataset.name photo pretrain.dataset.task_level node \
+  pretrain.checkpoint_dir <dir>/pretrained_models device 0
+```
+
 ## Batch runs on SLURM
 
 Each launcher reads rows from a whitespace-separated TSV (`slurm/<workflow>.tsv` by default, or the file in

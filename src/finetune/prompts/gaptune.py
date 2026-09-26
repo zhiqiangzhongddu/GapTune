@@ -128,9 +128,10 @@ class ObservationTypePrompt(nn.Module):
         self.source_bank = bank.to(device=self.gates.device, dtype=self.gates.dtype)
         self.source_empty.fill_(bank.size(0) == 0)
 
-    def source_context(self) -> torch.Tensor:
+    def source_context(self, bank: torch.Tensor | None = None) -> torch.Tensor:
+        """Eq. 8-9 with the current queries over *bank* (default: the fixed source bank)."""
         queries = self.queries if self.source_queries is None else self.source_queries
-        return pool_source_context(queries, self.source_bank, self.tau_c, self.obs_eps)
+        return pool_source_context(queries, self.source_bank if bank is None else bank, self.tau_c, self.obs_eps)
 
     @torch.no_grad()
     def refresh_retained(self) -> None:

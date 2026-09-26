@@ -12,14 +12,19 @@ from typing import Callable, Iterable, Optional
 from src.config import cfg as base_cfg, update_cfg
 from src.utils.save_results import extract_explicit_cfg_keys, set_explicit_cfg_keys
 
+from .cost import run_cost_study
+from .replacement import run_replacement
+from .rotation import run_rotation
+from .transfer import run_transfer
+
 # ``analysis.study`` -> runtime(cfg) -> exit status. ``None`` marks a planned
 # study without a runtime yet.
 STUDIES: dict[str, Optional[Callable]] = {
-    "transfer": None,  # App. A: prompt transferability (Fig. 1)
+    "transfer": run_transfer,  # App. A: prompt transferability (Fig. 1)
     "controlled_shift": None,  # App. C.7: prompt values under controlled shifts (Table 9, Fig. 7)
-    "replacement": None,  # App. C.6: fixed-predictor source-context replacement (Tables 7-8, Fig. 6)
-    "rotation": None,  # App. C.5: prompt direction at fixed magnitude (Fig. 5)
-    "cost": None,  # App. C.10: parameter / time / memory accounting (Tables 12-13)
+    "replacement": run_replacement,  # App. C.6: fixed-predictor source-context replacement (Tables 7-8, Fig. 6)
+    "rotation": run_rotation,  # App. C.5: prompt direction at fixed magnitude (Fig. 5)
+    "cost": run_cost_study,  # App. C.10: parameter / time / memory accounting (Tables 12-13)
 }
 
 
