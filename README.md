@@ -19,7 +19,7 @@ After training, only the pooled source contexts are retained. Inference needs ne
 ## Repository layout
 
 ```
-scripts/            CLI entry points (data preparation, pretraining, scratch training, fine-tuning)
+scripts/            CLI entry points (data preparation, pretraining, scratch training, fine-tuning, analyses)
 src/config/         yacs defaults for every workflow (override with dotted `key value` pairs on the CLI)
 src/data_loader/    dataset registry, few-shot / link splits, SVD feature unification, induced subgraphs
 src/model/          GNN encoders: GCN, GAT, GIN, H2GCN, FAGCN, Transformer, NodeFormer
@@ -27,6 +27,7 @@ src/pretrain/       AttrMasking, ContextPred, DGI, EdgePred, GraphCL, InfoGraph
 src/train/          scratch supervised training (target-supervised controls)
 src/finetune/       fine-tuning runner, full fine-tuning / head-only controls, and prompting methods
 src/results/        metric policy and LaTeX table builders from outputs/results/*.tsv
+src/analysis/       appendix analyses: controlled shifts, context gaps, paired statistics, study runtimes
 slurm/              TSV-driven SLURM launchers (pretrain / train / finetune)
 tests/              pytest suite
 data/, outputs/     datasets and artifacts (git-ignored except dataset lists and .gitkeep files)
@@ -170,9 +171,8 @@ GapTune and IGAP run node and edge targets on induced subgraphs only (`finetune.
   in `extra.pretrain_task_state`. `finetune.gaptune.proxy.mode random` gives the random-proxy control.
 
 The ablation switches (`value_mode`, `prompt_locations`, `query_mode`, `mixture`, `gate`) and the proxy settings are
-listed under `cfg.finetune.gaptune` in
-`src/config/_finetune.py`. `prompt_locations none` is the head-only control with the same readout. In TSVs, the
-`gaptune_plus` column sets `finetune.gaptune.plus`.
+listed under `cfg.finetune.gaptune` in `src/config/_finetune.py`. `prompt_locations none` is the head-only control with
+the same readout. In TSVs, the `gaptune_plus` column sets `finetune.gaptune.plus`.
 
 ```bash
 # cross-dataset: ZINC/GCN/EdgePred -> Photo, 5-shot, source-free GapTune
@@ -184,6 +184,13 @@ python scripts/run_finetune.py \
   finetune.method gaptune finetune.gaptune.plus False \
   --fewshot 5 0.0 1.0 device 0
 ```
+
+## Analyses
+
+`scripts/run_analysis.py analysis.study <name> [key value ...]` runs one appendix study from the `STUDIES` registry in
+`src/analysis/run.py`. Shared settings live under `cfg.analysis` in `src/config/_analysis.py`: `repetitions` (ten seeds
+by default), `output_dir` (a study writes to `<output_dir>/<study>/<run_tag>/`), checkpoint overrides, and the App. A.4
+context-gap sampling budgets `node_budget` and `message_budget`.
 
 ## Batch runs on SLURM
 
@@ -212,3 +219,10 @@ The same TSVs run locally with `<workflow>.run_tasks_tsv True <workflow>.tasks_t
 python -m src.results.finetune_tables   # LaTeX tables from outputs/results/finetune.tsv
 python -m src.results.train_tables      # scratch controls from outputs/results/train.tsv
 ```
+
+Besides the per-backbone and per-method grids, `finetune_tables` writes the GapTune paper tables:
+`finetune_cross_<shot>_table.tex` (Tables 1/14), `finetune_same_<shot>_table.tex` (Tables 2/15), and
+`finetune_ablation_{value,insertion,composition,source}_table.tex` (Tables 3-6). Scratch rows come from
+`--train-results-tsv` (default `outputs/results/train.tsv`). An ablation row is identified by the non-default
+`finetune.gaptune.*` keys that its run set explicitly, for example `EXTRA_ARGS="finetune.gaptune.value_mode target"`.
+The proxy arms also set `gaptune_plus False`. These keys keep ablation rows from overwriting the main GapTune cells.

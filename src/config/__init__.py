@@ -10,6 +10,7 @@ from ._model import set_model_cfg
 from ._train import set_train_cfg
 from ._pretrain import set_pretrain_cfg
 from ._finetune import set_finetune_cfg
+from ._analysis import set_analysis_cfg
 
 
 def set_cfg(cfg: CN) -> CN:
@@ -22,6 +23,7 @@ def set_cfg(cfg: CN) -> CN:
     set_train_cfg(cfg)
     set_pretrain_cfg(cfg)
     set_finetune_cfg(cfg)
+    set_analysis_cfg(cfg)
 
     return cfg
 

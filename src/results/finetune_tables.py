@@ -24,8 +24,27 @@ Three kinds of LaTeX tables are produced per shot (f5, f100):
 
 Cells are keyed by the pretrain dataset as well (:class:`CellKey`), so
 cross-dataset rows (e.g. ZINC/PubMed checkpoints) never collide with
-same-dataset rows; the rendered grids are the same-dataset ones (pretrain
+same-dataset rows; the grids above are the same-dataset ones (pretrain
 dataset == target dataset).
+
+The GapTune paper tables are rendered as well; bold/underline mark the
+best/second distinct displayed mean per column within a ranking group:
+
+* ``finetune_cross_<shot>_table.tex`` — Tables 1/14: one block per
+  :data:`CROSS_DATASET_SOURCES` checkpoint with its architecture-matched
+  scratch control (from ``train.tsv``), the twelve baselines, GapTune and
+  GapTune+; ranked within each block.
+* ``finetune_same_<shot>_table.tex`` — Tables 2/15: the seven scratch
+  controls, then each baseline and GapTune+ at its best observed test mean
+  over all backbones and pretrain methods (paper Eq. 78-79).
+* ``finetune_ablation_<name>_table.tex`` — Tables 3-6 (:data:`ABLATION_TABLES`)
+  on the ZINC/GCN/EdgePred checkpoint.
+
+GapTune ablation arms are launched with explicit ``finetune.gaptune.*``
+overrides (``gaptune_plus False`` for the proxy arms), which the result
+TSV records as columns.  Their non-default values form the cell's
+``variant`` key component, so ablation rows never overwrite the main
+GapTune/GapTune+ cells (``variant == ""``).
 """
 
 from __future__ import annotations
@@ -43,6 +62,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from yacs.config import CfgNode as CN
+
+from src.config import set_cfg
+from src.results import train_tables
 from src.results.metric_policy import TABLE_TASKS, eval_metric
 
 if False:  # pragma: no cover — type-only; torch deps are lazy-loaded inside backfill_model().
@@ -90,6 +113,7 @@ class CellKey:
     pretrain_method: str
     finetune_method: str
     plus: bool | None
+    variant: str = ""  # non-default finetune.gaptune.* settings of a GapTune ablation arm
 
 
 DATASETS: tuple[DatasetSpec, ...] = (
@@ -171,6 +195,117 @@ OOM_STATUS_VALUES = {
     "oom",
 }
 
+GAPTUNE_COLUMN_PREFIX = "finetune.gaptune."
+_GAPTUNE_DEFAULTS = set_cfg(CN()).finetune.gaptune
+
+
+@dataclass(frozen=True)
+class SourceSpec:
+    """A cross-dataset source checkpoint block (paper Tables 1 and 14)."""
+
+    dataset: str
+    label: str
+    model: str
+    pretrain_method: str
+
+
+CROSS_DATASET_SOURCES: tuple[SourceSpec, ...] = (
+    SourceSpec("zinc", "ZINC", "gcn", "edge_pred"),
+    SourceSpec("pubmed", "PubMed", "gin", "graphcl"),
+)
+#: Checkpoint of the GapTune ablations (paper App. C).
+ABLATION_SOURCE = CROSS_DATASET_SOURCES[0]
+
+#: Paper row order of the twelve prompting baselines (Tables 1, 2, 14, 15).
+_BASELINE_ORDER = ("all_in_one", "edgeprompt", "gpf", "gppt", "graphprompt", "pronog", "igap", "mtg", "supt")
+BASELINE_METHODS: tuple[FinetuneSpec, ...] = tuple(
+    spec for method in _BASELINE_ORDER for spec in PROMPT_METHODS if spec.method == method
+)
+GAPTUNE_METHODS: tuple[FinetuneSpec, ...] = tuple(spec for spec in PROMPT_METHODS if spec.method == "gaptune")
+
+
+@dataclass(frozen=True)
+class GapTuneArm:
+    """One ablation row: the GapTune+ flag and its non-default ``finetune.gaptune.*`` settings."""
+
+    label: str
+    settings: tuple[tuple[str, Any], ...] = ()
+    plus: bool = True
+
+    @property
+    def variant(self) -> str:
+        return _gaptune_variant(dict(self.settings), plus=self.plus)
+
+
+@dataclass(frozen=True)
+class AblationTable:
+    name: str
+    caption: str
+    columns: tuple[tuple[str, str], ...]  # (dataset name, shot)
+    arms: tuple[GapTuneArm, ...]
+
+
+_ABLATION_TARGETS = (("photo", "f5"), ("chameleon", "f5"), ("dblp", "f5"), ("mnist", "f5"))
+_HEAD_ONLY_ARM = GapTuneArm("Head only", (("prompt_locations", "none"),))
+_FREE = ("value_mode", "free")
+
+ABLATION_TABLES: tuple[AblationTable, ...] = (
+    AblationTable(
+        "value",
+        "Prompt-value ablation (paper Table 3).",
+        _ABLATION_TARGETS,
+        (
+            _HEAD_ONLY_ARM,
+            GapTuneArm("Target", (("value_mode", "target"),)),
+            GapTuneArm("Source", (("value_mode", "source"),)),
+            GapTuneArm("Paired mean", (("value_mode", "paired_mean"),)),
+            GapTuneArm("Free vectors", (_FREE,)),
+            GapTuneArm("GapTune Plus"),
+        ),
+    ),
+    AblationTable(
+        "insertion",
+        "Insertion ablation; free/gap parameter counts match within each pattern (paper Table 4).",
+        _ABLATION_TARGETS,
+        (
+            _HEAD_ONLY_ARM,
+            GapTuneArm("Free values: node only", (_FREE, ("prompt_locations", "node"))),
+            GapTuneArm("Free values: message only", (_FREE, ("prompt_locations", "message"))),
+            GapTuneArm("Free values: node + message", (_FREE,)),
+            GapTuneArm("Gap values: node only", (("prompt_locations", "node"),)),
+            GapTuneArm("Gap values: message only", (("prompt_locations", "message"),)),
+            GapTuneArm("GapTune Plus: node + message"),
+        ),
+    ),
+    AblationTable(
+        "composition",
+        "Shared queries and local signed composition (paper Table 5).",
+        (("photo", "f5"), ("photo", "f100"), ("chameleon", "f5"), ("chameleon", "f100")),
+        (
+            GapTuneArm("Frozen shared queries", (("query_mode", "frozen"),)),
+            GapTuneArm("Untied source/target queries", (("query_mode", "untied"),)),
+            GapTuneArm("Uniform mixture weights", (("mixture", "uniform"),)),
+            GapTuneArm("Learned global mixture weights", (("mixture", "global"),)),
+            GapTuneArm("Nonnegative gates", (("gate", "nonnegative"),)),
+            GapTuneArm("GapTune Plus"),
+        ),
+    ),
+    AblationTable(
+        "source",
+        "Source-context construction; $B$ is the number of proxy graphs (paper Table 6).",
+        _ABLATION_TARGETS,
+        (
+            GapTuneArm("Random proxies ($B=4$)", (("proxy.mode", "random"), ("proxy.num_graphs", 4)), plus=False),
+            GapTuneArm("Random proxies ($B=16$)", (("proxy.mode", "random"),), plus=False),
+            GapTuneArm("Random proxies ($B=64$)", (("proxy.mode", "random"), ("proxy.num_graphs", 64)), plus=False),
+            GapTuneArm("Inverted proxies ($B=4$)", (("proxy.num_graphs", 4),), plus=False),
+            GapTuneArm("GapTune ($B=16$)", plus=False),
+            GapTuneArm("Inverted proxies ($B=64$)", (("proxy.num_graphs", 64),), plus=False),
+            GapTuneArm("GapTune Plus (source available)"),
+        ),
+    ),
+)
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
@@ -200,6 +335,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             models=models,
             results_tsv=results_tsv,
             results_dir=results_dir,
+            train_results_tsv=Path(args.train_results_tsv),
             dry_run=bool(args.dry_run),
         )
         print(f"{LOG_PREFIX} Rendered tables: {rendered}")
@@ -218,6 +354,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--results-tsv", default=str(RESULTS_TSV))
     parser.add_argument("--results-dir", default=str(RESULTS_DIR))
+    parser.add_argument(
+        "--train-results-tsv",
+        default=str(train_tables.RESULTS_TSV),
+        help="train.tsv supplying the scratch-control rows of the cross- and same-dataset paper tables.",
+    )
     parser.add_argument("--tasks-tsv-template", default=str(SLURM_DIR / "finetune.tsv"))
     parser.add_argument("--max-backfill-cells", type=int, default=0, help="Stop after this many appended rows (0 = no limit).")
     parser.add_argument("--min-seeds", type=int, default=0, help="Minimum seeds required to append a row (0 = require all requested seeds).")
@@ -477,10 +618,12 @@ def render_tables(
     models: Sequence[str],
     results_tsv: Path,
     results_dir: Path,
+    train_results_tsv: Path = train_tables.RESULTS_TSV,
     dry_run: bool = False,
 ) -> int:
     rows = _read_result_rows(results_tsv)
     latest = _latest_rows(rows)
+    scratch = train_tables._latest_rows(train_tables._read_result_rows(train_results_tsv))
     rendered = 0
     normalized_models = [_normalize_name(model) for model in models]
     for model in normalized_models:
@@ -506,6 +649,16 @@ def render_tables(
         results_dir=results_dir,
         dry_run=dry_run,
     )
+
+    # GapTune paper tables.
+    for shot in ("f5", "f100"):
+        text = _render_cross_dataset_table(shot=shot, latest=latest, scratch=scratch)
+        rendered += _write_table(results_dir / f"finetune_cross_{shot}_table.tex", text, dry_run=dry_run)
+        text = _render_same_dataset_table(models=normalized_models, shot=shot, latest=latest, scratch=scratch)
+        rendered += _write_table(results_dir / f"finetune_same_{shot}_table.tex", text, dry_run=dry_run)
+    for table in ABLATION_TABLES:
+        text = _render_ablation_table(table=table, latest=latest)
+        rendered += _write_table(results_dir / f"finetune_ablation_{table.name}_table.tex", text, dry_run=dry_run)
 
     return rendered
 
@@ -597,7 +750,8 @@ def _is_oom_row(row: Mapping[str, str]) -> bool:
 
 
 def _expected_cells_for_model(model: str) -> set[CellKey]:
-    # The rendered grids are same-dataset: pretrain dataset == target dataset.
+    # Same-dataset grids (pretrain dataset == target dataset) plus the
+    # cross-dataset blocks whose source checkpoint uses this backbone.
     keys: set[CellKey] = set()
     for dataset in DATASETS:
         for split in (dataset.f5_split, dataset.f100_split):
@@ -605,6 +759,11 @@ def _expected_cells_for_model(model: str) -> set[CellKey]:
                 keys.add(CellKey(model, dataset.name, split, dataset.name, pretrain.method, "supervised", None))
                 for finetune in PROMPT_METHODS:
                     keys.add(CellKey(model, dataset.name, split, dataset.name, pretrain.method, finetune.method, finetune.plus))
+            for source in CROSS_DATASET_SOURCES:
+                if source.model != model:
+                    continue
+                for finetune in PROMPT_METHODS:
+                    keys.add(CellKey(model, dataset.name, split, source.dataset, source.pretrain_method, finetune.method, finetune.plus))
     return keys
 
 
@@ -638,6 +797,15 @@ def _cell_key_from_result_row(row: Mapping[str, str]) -> CellKey | None:
     split = _split_key(row.get("finetune.dataset.fixed_split"))
     if not model or not dataset or not pretrain_dataset or not pretrain_method or not finetune_method or not split:
         return None
+    plus = _plus_from_result_row(row, finetune_method)
+    variant = ""
+    if finetune_method == "gaptune":
+        settings = {
+            column[len(GAPTUNE_COLUMN_PREFIX):]: value
+            for column, value in row.items()
+            if column and column.startswith(GAPTUNE_COLUMN_PREFIX)
+        }
+        variant = _gaptune_variant(settings, plus=bool(plus))
     return CellKey(
         model,
         dataset,
@@ -645,8 +813,47 @@ def _cell_key_from_result_row(row: Mapping[str, str]) -> CellKey | None:
         pretrain_dataset,
         pretrain_method,
         finetune_method,
-        _plus_from_result_row(row, finetune_method),
+        plus,
+        variant,
     )
+
+
+def _gaptune_variant(settings: Mapping[str, Any], *, plus: bool) -> str:
+    """Canonical ``key=value`` list of a GapTune run's non-default settings.
+
+    ``settings`` maps ``finetune.gaptune.*`` suffixes to TSV text or Python
+    values; a blank value is a row written before that column existed, i.e.
+    the default.  ``plus`` is its own key component, and the proxy settings
+    only matter for source-free runs (as in ``GapTune.variant_tag``).
+    """
+    parts = []
+    for key in sorted(settings):
+        if key == "plus" or (plus and key.startswith("proxy.")):
+            continue
+        default = _GAPTUNE_DEFAULTS
+        for part in key.split("."):
+            default = getattr(default, part, None)
+        value = _parse_setting(settings[key], default)
+        if value != default:
+            parts.append(f"{key}={value:g}" if isinstance(value, float) else f"{key}={value}")
+    return ",".join(parts)
+
+
+def _parse_setting(value: Any, default: Any) -> Any:
+    """Parse one TSV/config value with the type of its default (blank -> default)."""
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return default
+    if isinstance(default, bool):
+        parsed = _parse_bool(text)
+        return text if parsed is None else parsed
+    if default is None or isinstance(default, (int, float)):
+        try:
+            number = float(text)
+        except ValueError:
+            return None if text.lower() in {"none", "null"} else text
+        return int(number) if isinstance(default, int) and number.is_integer() else number
+    return text.lower()
 
 
 def _plus_from_task(task: Mapping[str, Any], finetune_method: str) -> bool | None:
@@ -1318,6 +1525,207 @@ def _render_finetune_method_table(
             )
 
     lines.extend(_TABLE_FOOTER_LINES)
+    return "\n".join(lines)
+
+
+def _render_cross_dataset_table(
+    *,
+    shot: str,
+    latest: Mapping[CellKey, Mapping[str, str]],
+    scratch: Mapping[train_tables.CellKey, Mapping[str, str]],
+) -> str:
+    shot_label = "5" if shot == "f5" else "100"
+    splits = [dataset.f5_split if shot == "f5" else dataset.f100_split for dataset in DATASETS]
+    metrics = [dataset.metric for dataset in DATASETS]
+    pretrain_labels = {pretrain.method: pretrain.label for pretrain in PRETRAIN_METHODS}
+    body: list[str] = []
+    for source in CROSS_DATASET_SOURCES:
+        model_label = MODEL_LABELS[source.model]
+        rows = [
+            (
+                f"{model_label} (scratch)",
+                [
+                    _cell_value(scratch.get(train_tables.CellKey(source.model, dataset.name, split)), dataset.metric)
+                    for dataset, split in zip(DATASETS, splits)
+                ],
+            )
+        ]
+        for finetune in (*BASELINE_METHODS, *GAPTUNE_METHODS):
+            cells = []
+            for dataset, split in zip(DATASETS, splits):
+                key = CellKey(source.model, dataset.name, split, source.dataset, source.pretrain_method, finetune.method, finetune.plus)
+                cells.append(_cell_value(latest.get(key), dataset.metric))
+            rows.append((finetune.label, cells))
+        title = f"Source dataset: {source.label}, GNN: {model_label}, Pretraining: {pretrain_labels[source.pretrain_method]}"
+        body.extend(_ranked_group_lines([(title, rows)], metrics))
+    return _paper_table(
+        selection="one block per source checkpoint (pretrain dataset/model/method); latest matching row per cell; scratch rows from train.tsv; ranked within each block.",
+        caption=(
+            f"Cross-dataset adaptation at \\emph{{{shot_label}-shot}}. Each block repeats the architecture-matched scratch control. "
+            "Bold/underline mark the best/second test means within a block, including scratch."
+        ),
+        label=f"table:results_cross_{shot}",
+        header=_TABLE_COLUMN_HEADER_LINES,
+        body=body,
+    )
+
+
+def _render_same_dataset_table(
+    *,
+    models: Sequence[str],
+    shot: str,
+    latest: Mapping[CellKey, Mapping[str, str]],
+    scratch: Mapping[train_tables.CellKey, Mapping[str, str]],
+) -> str:
+    shot_label = "5" if shot == "f5" else "100"
+    splits = [dataset.f5_split if shot == "f5" else dataset.f100_split for dataset in DATASETS]
+    metrics = [dataset.metric for dataset in DATASETS]
+    pretrain_methods = [pretrain.method for pretrain in PRETRAIN_METHODS]
+    scratch_rows = [
+        (
+            model.label,
+            [
+                _cell_value(scratch.get(train_tables.CellKey(model.name, dataset.name, split)), dataset.metric)
+                for dataset, split in zip(DATASETS, splits)
+            ],
+        )
+        for model in train_tables.MODELS
+        if model.name in models
+    ]
+    prompt_rows = []
+    for finetune in (*BASELINE_METHODS, *(spec for spec in GAPTUNE_METHODS if spec.plus)):
+        cells = []
+        for dataset, split in zip(DATASETS, splits):
+            best = _best_for_cell(
+                models=models, pretrain_methods=pretrain_methods, dataset=dataset, split=split, finetune=finetune, latest=latest
+            )
+            if best is not None:
+                cells.append(best[:2])
+            elif _has_oom_for_cell(
+                models=models, pretrain_methods=pretrain_methods, dataset=dataset, split=split, finetune=finetune, latest=latest
+            ):
+                cells.append(OOM_STATUS)
+            else:
+                cells.append(None)
+        prompt_rows.append((finetune.label, cells))
+    sections = [
+        ("Target-supervised controls: training from scratch (no pretraining)", scratch_rows),
+        ("Same-dataset pretraining + prompting (best-observed summaries)", prompt_rows),
+    ]
+    return _paper_table(
+        selection=f"scratch rows from train.tsv; prompting rows pick the best test mean across models={list(models)} and pretrain methods={pretrain_methods} (same-dataset cells only).",
+        caption=(
+            f"Same-dataset \\emph{{{shot_label}-shot}} results with scratch controls; prompting rows report the best observed "
+            "test mean over the architecture--objective grid. Bold/underline indicate the best/second-best displayed means."
+        ),
+        label=f"table:results_same_{shot}",
+        header=_TABLE_COLUMN_HEADER_LINES,
+        body=_ranked_group_lines(sections, metrics),
+    )
+
+
+def _render_ablation_table(*, table: AblationTable, latest: Mapping[CellKey, Mapping[str, str]]) -> str:
+    source = ABLATION_SOURCE
+    pretrain_label = next(pretrain.label for pretrain in PRETRAIN_METHODS if pretrain.method == source.pretrain_method)
+    columns = [(next(spec for spec in DATASETS if spec.name == name), shot) for name, shot in table.columns]
+    metrics = [dataset.metric for dataset, _ in columns]
+    rows = []
+    for arm in table.arms:
+        cells = []
+        for dataset, shot in columns:
+            split = dataset.f5_split if shot == "f5" else dataset.f100_split
+            key = CellKey(source.model, dataset.name, split, source.dataset, source.pretrain_method, "gaptune", arm.plus, arm.variant)
+            cells.append(_cell_value(latest.get(key), dataset.metric))
+        rows.append((arm.label, cells))
+    header = [
+        f"\\begin{{tabular}}{{l|{'c' * len(columns)}}}",
+        "\\toprule",
+        "\\textbf{Variant} & " + " & ".join(f"\\textbf{{{dataset.label}}}" for dataset, _ in columns) + " \\\\",
+        "& " + " & ".join(f"{dataset.task_label} / {'5' if shot == 'f5' else '100'}-shot" for dataset, shot in columns) + " \\\\",
+    ]
+    return _paper_table(
+        selection=(
+            f"model.name={source.model}, pretrain {source.dataset}/{source.pretrain_method}, finetune.method=gaptune; "
+            "arms keyed by gaptune plus flag + non-default finetune.gaptune.* columns; latest matching row per cell."
+        ),
+        caption=(
+            f"{table.caption} {source.label}/{MODEL_LABELS[source.model]}/{pretrain_label} checkpoint. "
+            "Bold/underline mark the best/second distinct displayed means."
+        ),
+        label=f"table:ablation_{table.name}",
+        header=header,
+        body=_ranked_group_lines([("", rows)], metrics),
+    )
+
+
+def _cell_value(row: Mapping[str, str] | None, metric: str) -> tuple[float, float] | str | None:
+    """``(mean, std)`` of a renderable row, ``OOM_STATUS``, or ``None`` when missing."""
+    if row is None:
+        return None
+    if _is_oom_row(row):
+        return OOM_STATUS
+    if not _is_renderable_metric_row(row, metric):
+        return None
+    return float(row[f"{metric}_mean"]), float(row[f"{metric}_std"])
+
+
+def _shown_mean(mean: float, metric: str) -> str:
+    return f"{mean if metric == 'test_mae' else 100.0 * mean:.2f}"
+
+
+def _ranked_group_lines(
+    sections: Sequence[tuple[str, Sequence[tuple[str, Sequence[tuple[float, float] | str | None]]]]],
+    metrics: Sequence[str],
+) -> list[str]:
+    """Rows of one ranking group; bold/underline mark each column's best/second distinct displayed mean."""
+    all_cells = [cells for _, rows in sections for _, cells in rows]
+    tops = []
+    for column, metric in enumerate(metrics):
+        shown = {float(_shown_mean(cells[column][0], metric)) for cells in all_cells if isinstance(cells[column], tuple)}
+        tops.append(sorted(shown, reverse=metric != "test_mae")[:2])
+    lines = []
+    for title, rows in sections:
+        lines.append("\\midrule")
+        if title:
+            lines.extend([f"& \\multicolumn{{{len(metrics)}}}{{c}}{{{title}}} \\\\", "\\midrule"])
+        for label, cells in rows:
+            values = []
+            for cell, metric, top in zip(cells, metrics, tops):
+                if not isinstance(cell, tuple):
+                    values.append(cell or "--")
+                    continue
+                mean_text = _shown_mean(cell[0], metric)
+                std_text = _shown_mean(cell[1], metric)
+                if float(mean_text) == top[0]:
+                    mean_text = f"\\textbf{{{mean_text}}}"
+                elif len(top) > 1 and float(mean_text) == top[1]:
+                    mean_text = f"\\underline{{{mean_text}}}"
+                values.append(f"{mean_text}$_{{\\pm{std_text}}}$")
+            lines.extend([label, f"    & {' & '.join(values)} \\\\"])
+    return lines
+
+
+def _paper_table(*, selection: str, caption: str, label: str, header: Sequence[str], body: Sequence[str]) -> str:
+    lines = [
+        "% Generated from outputs/results/finetune.tsv (scratch controls from outputs/results/train.tsv).",
+        f"% Selection: {selection}",
+        "% Metrics: test_acc for NC/MNIST GC, test_auc for LP/Toxcast GC, test_mae for QM7b GR (lower is better).",
+        "% Missing cells are shown as --; explicit OOM status rows are shown as OOM.",
+        "\\begin{table*}[t]",
+        "\\caption{",
+        caption,
+        "}",
+        f"\\label{{{label}}}",
+        "% \\vskip 0.15in",
+        "% \\vspace{-1.mm}",
+        "\\begin{center}",
+        "\\begin{small}",
+        "% \\begin{sc}",
+        "\\resizebox{1.\\linewidth}{!}{",
+        *header,
+        *body,
+        *_TABLE_FOOTER_LINES,
+    ]
     return "\n".join(lines)
 
 
