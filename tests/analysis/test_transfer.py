@@ -11,7 +11,8 @@
 - the summary: curve means of ``E``, mean within-repetition Spearman (Eq. 30)
   over the defined repetitions, pooled within-family correlations, bootstrap
   intervals around the point;
-- the study is registered in the analysis CLI.
+- the study is registered in the analysis CLI and reads its splits from
+  ``analysis.split_root``.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from __future__ import annotations
 import copy
 import math
 
+import pytest
 import torch
 from scipy.stats import spearmanr
 from torch_geometric.data import Data
@@ -27,7 +29,7 @@ from yacs.config import CfgNode as CN
 from src.analysis import run as analysis_run
 from src.analysis import transfer
 from src.analysis.perturbations import CONTROL, FAMILIES
-from src.analysis.transfer import _fit, _frozen_encoders, run_repetition, run_transfer, summarize
+from src.analysis.transfer import _fit, _prompt_encoder, run_repetition, run_transfer, summarize
 from src.config import set_cfg
 from src.model import build_encoder_from_cfg
 
@@ -50,7 +52,8 @@ def _cfg():
 def _setup():
     cfg = _cfg()
     torch.manual_seed(0)
-    model, encoder = _frozen_encoders(cfg, build_encoder_from_cfg(cfg, IN_DIM).state_dict(), torch.device("cpu"))
+    encoder = build_encoder_from_cfg(cfg, IN_DIM).eval().requires_grad_(False)
+    model = _prompt_encoder(cfg, encoder, torch.device("cpu"))
     g = torch.Generator().manual_seed(0)
     ei = torch.randint(NUM_NODES, (2, 80), generator=g)
     y = torch.arange(NUM_NODES) % NUM_CLASSES
@@ -212,3 +215,24 @@ def test_summary_counts_only_defined_repetitions():
 
 def test_transfer_study_is_registered():
     assert analysis_run.STUDIES["transfer"] is run_transfer
+
+
+def test_repetition_splits_come_from_analysis_split_root(monkeypatch, tmp_path):
+    cfg = _cfg()
+    cfg.analysis.pretrained_checkpoint = str(tmp_path / "photo_gcn_dgi.pt")
+    (tmp_path / "photo_gcn_dgi.pt").touch()
+    cfg.analysis.output_dir, cfg.analysis.split_root = str(tmp_path / "out"), str(tmp_path / "splits")
+    calls = []
+
+    class Stop(Exception):
+        pass
+
+    def loaders(**kwargs):
+        calls.append(kwargs)
+        raise Stop  # end the run before the repetition
+
+    monkeypatch.setattr(transfer, "full_graph_setup", lambda cfg, *args: (None, build_encoder_from_cfg(cfg, IN_DIM)))
+    monkeypatch.setattr(transfer, "make_workflow_loaders", loaders)
+    with pytest.raises(Stop):
+        run_transfer(cfg)
+    assert calls[0]["split_root"] == str(tmp_path / "splits") and calls[0]["split"] == (5, 0.0, 1.0)

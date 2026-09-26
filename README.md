@@ -227,10 +227,10 @@ python scripts/run_analysis.py analysis.study rotation \
 python scripts/run_analysis.py analysis.study cost device 0
 ```
 
-`transfer` and `controlled_shift` use the `(5, 0, 1)` split of each repetition seed. A seed without a split file under
-`data_preparation.dataset.split_root` gets one created there, as the runners do; point `split_root` at a copy of the
-splits to leave a shared split tree unchanged. The paper tables built from finetune results are listed under
-[Results tables](#results-tables).
+`transfer` and `controlled_shift` use the `(5, 0, 1)` split of each repetition seed from `analysis.split_root`
+(default `outputs/analysis/splits`, git-ignored), created there on first use, so the shared `data/splits` stays
+unchanged. Splits are seeded, so a created file has the same train/val/test indices as the shared one for the same
+seed. The paper tables built from finetune results are listed under [Results tables](#results-tables).
 
 ## Batch runs on SLURM
 

@@ -11,6 +11,7 @@ def test_analysis_cfg_defaults():
     assert base_cfg.analysis.study == ""
     assert base_cfg.analysis.output_dir == "outputs/analysis"
     assert list(base_cfg.analysis.repetitions) == [42, 0, 100, 123, 2024, 1, 2, 3, 4, 5]
+    assert base_cfg.analysis.split_root == "outputs/analysis/splits"  # not the shared data/splits
 
 
 def test_unknown_or_missing_study_exits_with_a_clear_error(capsys):

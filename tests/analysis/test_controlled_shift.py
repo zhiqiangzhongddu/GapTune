@@ -9,7 +9,8 @@
   arm of every view gets the unperturbed graph's source bank, and the
   summary's paired effects are the mean gap-minus-comparator differences;
 - single-graph pooling / mixing in the GapTune prompt matches the per-graph path;
-- CLI registration and the one-dataset rule for an explicit checkpoint.
+- CLI registration, the one-dataset rule for an explicit checkpoint and the
+  split files read from ``analysis.split_root``.
 """
 
 from __future__ import annotations
@@ -203,3 +204,25 @@ def test_cli_registration_and_explicit_checkpoint_rule(capsys):
     cfg.analysis.pretrained_checkpoint = "checkpoint.pt"
     assert run_controlled_shift(cfg) == 1  # photo and chameleon each need their own checkpoint
     assert "single dataset" in capsys.readouterr().out
+
+
+def test_repetition_splits_come_from_analysis_split_root(monkeypatch, tmp_path):
+    cfg = _cfg()
+    cfg.analysis.controlled_shift.datasets = ["chameleon"]
+    cfg.analysis.pretrained_checkpoint = str(tmp_path / "chameleon_gcn_dgi.pt")
+    (tmp_path / "chameleon_gcn_dgi.pt").touch()
+    cfg.analysis.output_dir, cfg.analysis.split_root = str(tmp_path / "out"), str(tmp_path / "splits")
+    calls = []
+
+    class Stop(Exception):
+        pass
+
+    def loaders(**kwargs):
+        calls.append(kwargs)
+        raise Stop  # end the run before the repetition
+
+    monkeypatch.setattr(controlled_shift, "full_graph_setup", lambda *args: (None, None))
+    monkeypatch.setattr(controlled_shift, "make_workflow_loaders", loaders)
+    with pytest.raises(Stop):
+        run_controlled_shift(cfg)
+    assert calls[0]["split_root"] == str(tmp_path / "splits") and calls[0]["dataset_name"] == "chameleon"

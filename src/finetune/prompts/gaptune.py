@@ -34,6 +34,7 @@ from __future__ import annotations
 import math
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch_geometric.utils import scatter
 from torch_geometric.utils import softmax as graph_softmax
@@ -193,13 +194,16 @@ class ObservationTypePrompt(nn.Module):
         values = self.values(z, graph_id, num_graphs, use_retained=use_retained)
         weights = self.mixture_weights(descriptors) * torch.tanh(self.gates)
         if num_graphs == 1:
-            # One (e.g. full) graph: dense mixing; the per-row gather below
-            # has a very slow backward when every row hits the same graph.
+            # One (e.g. full) graph: plain dense mixing.
             return weights @ values[0]
-        prompt = z.new_zeros(z.shape)
-        for k in range(self.num_queries):
-            prompt = prompt + weights[:, k : k + 1] * values[graph_id, k]
-        return prompt
+        # Row o is a weighted bag over the K rows of its graph in the
+        # flattened [G*K, d] values; never gathers an [n, K, d] tensor.
+        index = graph_id.unsqueeze(-1) * self.num_queries + torch.arange(self.num_queries, device=graph_id.device)
+        table = values.flatten(0, 1)
+        if weights.requires_grad and not table.requires_grad:
+            # torch 2.1 embedding_bag fails when only the bag weights need grads (e.g. frozen queries).
+            table = table.detach().requires_grad_()
+        return F.embedding_bag(index, table, per_sample_weights=weights, mode="sum")
 
 
 class ContextGapPrompt(nn.Module):

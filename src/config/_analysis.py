@@ -8,6 +8,8 @@ def set_analysis_cfg(cfg: CN) -> CN:
     cfg.analysis.output_dir = "outputs/analysis"  # results go to <output_dir>/<study>/<run_tag>/
     # seeds of the ten-repetition studies (App. A, C.7): cfg.seeds extended deterministically
     cfg.analysis.repetitions = [42, 0, 100, 123, 2024, 1, 2, 3, 4, 5]
+    # split files of the App. A / C.7 repetitions, created here on first use (the shared data/splits stays untouched)
+    cfg.analysis.split_root = "outputs/analysis/splits"
     cfg.analysis.pretrained_checkpoint = ""  # frozen pretrained encoder; "" resolves from pretrain.* / model.*
     # restored GapTune(+) predictor (C.5 / C.6), one per seed of finetune.num_runs ("{seed}" in the path);
     # "" resolves each seed's checkpoint from finetune.* like the finetune runner

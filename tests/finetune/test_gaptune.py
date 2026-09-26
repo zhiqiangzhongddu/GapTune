@@ -7,7 +7,8 @@
 - ``||p_o|| <= max_k ||d_k||`` (Prop. 3.1); node-prompt permutation
   equivariance and edge-readout symmetry (Prop. 3.2);
 - exact retention (Prop. B.3), including a reload without the source bank;
-- target pooling never mixes the graphs of a minibatch;
+- target pooling never mixes the graphs of a minibatch; multi-graph
+  prompt mixing matches the per-query reference loop (values and grads);
 - ablation switches (value modes, free-value clip, locations, frozen /
   untied queries, uniform / global mixtures, nonnegative gates); gradients
   reach Q, W, theta and the head, never the encoder;
@@ -27,7 +28,7 @@ from yacs.config import CfgNode as CN
 import src.finetune.methods.gaptune as gaptune_module
 from src.config import set_cfg
 from src.finetune.methods.gaptune import FinetuneGapTune, sample_source_observations
-from src.finetune.prompts.gaptune import pool_source_context, pool_target_contexts
+from src.finetune.prompts.gaptune import ObservationTypePrompt, pool_source_context, pool_target_contexts
 from src.finetune.readouts import readout_input_dim, task_native_readout
 from src.finetune.target_stats import preserve_loader_rng
 from src.finetune.utils import _finetune_custom_parser, parse_finetune_tasks
@@ -308,6 +309,46 @@ def test_target_pooling_never_mixes_graphs():
     for layer, p, p_changed in zip(obs.layers, message_prompts, message_prompts_changed):
         keep = data.batch[layer.receiver] != 2
         torch.testing.assert_close(p_changed[keep], p[keep], atol=1e-6, rtol=0)
+
+
+@pytest.mark.parametrize("value_mode,query_mode", [("gap", "shared"), ("gap", "frozen"), ("free", "shared")])
+def test_multi_graph_mixing_matches_reference_loop(value_mode, query_mode):
+    g = torch.Generator().manual_seed(0)
+    num, dim, desc_dim, num_graphs = 200, 16, 24, 5
+    prompt = ObservationTypePrompt(
+        dim,
+        desc_dim,
+        num_queries=8,
+        tau_c=0.5,
+        tau_p=0.5,
+        obs_eps=1e-6,
+        value_mode=value_mode,
+        query_mode=query_mode,
+        mixture="local",
+        generator=g,
+    )
+    prompt.set_source_bank(torch.randn(50, dim, generator=g))
+    with torch.no_grad():
+        prompt.gates.copy_(2.0 * torch.randn(prompt.gates.shape, generator=g))
+    z = torch.randn(num, dim, generator=g)
+    descriptors = torch.randn(num, desc_dim, generator=g)
+    graph_id = torch.randint(num_graphs, (num,), generator=g)  # unsorted rows
+    upstream = torch.randn(num, dim, generator=g)
+    params = [p for p in prompt.parameters() if p.requires_grad]
+
+    out = prompt(z, descriptors, graph_id, num_graphs, use_retained=False)
+    grads = torch.autograd.grad((out * upstream).sum(), params)
+
+    values = prompt.values(z, graph_id, num_graphs, use_retained=False)
+    weights = prompt.mixture_weights(descriptors) * torch.tanh(prompt.gates)
+    expected = z.new_zeros(z.shape)
+    for k in range(prompt.num_queries):
+        expected = expected + weights[:, k : k + 1] * values[graph_id, k]
+    expected_grads = torch.autograd.grad((expected * upstream).sum(), params)
+
+    torch.testing.assert_close(out, expected, atol=1e-6, rtol=0)
+    for grad, expected_grad in zip(grads, expected_grads):
+        torch.testing.assert_close(grad, expected_grad, atol=1e-6, rtol=0)
 
 
 # --------------------------------------------------------------------------

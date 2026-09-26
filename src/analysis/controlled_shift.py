@@ -4,7 +4,8 @@ Per dataset of ``analysis.controlled_shift.datasets`` (Photo, Chameleon): the
 full graph (node classification) with its own within-dataset DGI GCN, resolved
 like the finetune runner from ``pretrain.*`` / ``model.*`` with
 ``pretrain.dataset.name`` set to the dataset. The support of repetition ``s``
-is the ``fixed_split`` few-shot split of seed ``s``, fixed across views.
+is the ``fixed_split`` few-shot split of seed ``s`` under
+``analysis.split_root``, fixed across views.
 The views and the discrepancy samples draw from two streams seeded by
 ``np.random.SeedSequence(s).generate_state(2)``, so they share no draws with
 GapTune's initialiser stream ``s`` or with other repetitions.
@@ -50,22 +51,17 @@ import numpy as np
 import torch
 from torch_geometric.data import Data
 
-from src.data_loader import create_dataset, dataset_info
 from src.finetune.encoders.gaptune import get_gaptune_driver
-from src.finetune.finetuner import FinetuneRunner
 from src.finetune.methods.gaptune import FinetuneGapTune
 from src.finetune.monitoring import resolve_finetune_monitor_spec
-from src.finetune.utils import resolve_pretrained_checkpoint
-from src.model import build_encoder_from_cfg
-from src.utils.checkpoint import cfg_to_dict, save_json_atomic
-from src.utils.dataset_helpers import make_workflow_loaders, populate_dataset_cfg_from_meta, shared_split_root
+from src.utils.checkpoint import save_json_atomic
+from src.utils.dataset_helpers import make_workflow_loaders
 from src.utils.monitoring import is_metric_improved, monitor_uses_train_split, resolve_monitor_value
-from src.utils.run_helpers import resolve_seeds
 from src.utils.training import run_epoch_loop
 
 from .context_gap import view_context_gaps
 from .perturbations import controlled_views, simple_undirected_edges
-from .predictor import study_dir, write_tsv
+from .predictor import full_graph_setup, pretrained_checkpoint, study_dir, write_tsv
 from .stats import paired_t
 
 # arm -> finetune.gaptune overrides
@@ -208,37 +204,10 @@ def summarize(rows: list[dict]) -> list[dict]:
     return effects
 
 
-def _checkpoint(cfg, dataset: str) -> str | None:
-    """``analysis.pretrained_checkpoint``, else the finetune runner's lookup for ``dataset``'s own checkpoint."""
-    path = str(cfg.analysis.pretrained_checkpoint or "").strip()
-    if not path:
-        lookup = cfg.clone()
-        lookup.seed = resolve_seeds(cfg, requested_count=1)[0]
-        lookup.pretrain.dataset.name = dataset
-        path, _ = resolve_pretrained_checkpoint(lookup)
-    return path if path and os.path.isfile(path) else None
-
-
 def run_dataset(cfg, name: str, path: str, device: torch.device) -> None:
     """Every repetition of ``analysis.repetitions`` on dataset ``name`` with checkpoint ``path``, then the summary."""
     cfg = cfg.clone()
-    payload = torch.load(path, map_location="cpu")
-    FinetuneRunner._merge_dict_into_cfg(cfg.model, cfg_to_dict(payload.get("cfg") or {}).get("model") or {})
-    ds = cfg.finetune.dataset
-    ds.name, ds.task_level, ds.induced = name, "node", False
-    dataset = create_dataset(
-        name=name,
-        root=ds.root,
-        task_level="node",
-        feat_reduction=ds.feat_reduction,
-        feat_reduction_dim=ds.feat_reduction_svd_dim,
-        feature_svd_dir=ds.feature_svd_dir,
-        induced=False,
-    )
-    populate_dataset_cfg_from_meta(cfg.model, ds, dataset_info(dataset, "node", name))
-    model = build_encoder_from_cfg(cfg, cfg.model.in_dim)
-    model.load_state_dict(payload["model_state"])
-    model = model.to(device).eval().requires_grad_(False)
+    dataset, model = full_graph_setup(cfg, name, path, device)
     out_dir = study_dir(cfg, "controlled_shift", path)
     print(f"[Analysis][controlled_shift] dataset={name} checkpoint={path} output={out_dir}")
 
@@ -254,7 +223,7 @@ def run_dataset(cfg, name: str, path: str, device: torch.device) -> None:
             split=tuple(cfg.analysis.controlled_shift.fixed_split),
             seed=seed,
             induced=False,
-            split_root=shared_split_root(cfg),
+            split_root=cfg.analysis.split_root,
         )
         data = next(iter(loader)).to(device)
         rep = run_repetition(cfg, model, data, seed)
@@ -291,7 +260,7 @@ def run_controlled_shift(cfg) -> int:
         print("[Analysis][controlled_shift] analysis.pretrained_checkpoint is one within-dataset checkpoint; "
               "select a single dataset with analysis.controlled_shift.datasets.")
         return 1
-    paths = {name: _checkpoint(cfg, name) for name in datasets}
+    paths = {name: pretrained_checkpoint(cfg, name)[0] for name in datasets}
     missing = [name for name, path in paths.items() if path is None]
     if missing:
         print(f"[Analysis][controlled_shift] Unable to resolve the pretrained checkpoint of {missing} "
